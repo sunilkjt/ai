@@ -11,8 +11,10 @@ import Settings from './pages/Settings';
 import SignalDetail from './pages/SignalDetail';
 
 export default function App(): JSX.Element {
+  // Adapts to host: '/' locally & on Vercel, '/ai' on GitHub Project Pages.
+  const base = import.meta.env.BASE_URL === '/' ? undefined : import.meta.env.BASE_URL.replace(/\/$/, '');
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={base}>
       <Routes>
         <Route element={<Layout />}>
           <Route index element={<Dashboard />} />

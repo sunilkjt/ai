@@ -21,6 +21,37 @@ export default function History(): JSX.Element {
     return [...m.entries()];
   }, [decided]);
 
+  const byCategory = useMemo(() => {
+    const m = new Map<string, { n: number; w: number }>();
+    for (const x of decided) {
+      const k = x.category ?? 'UNKNOWN';
+      const e = m.get(k) ?? { n: 0, w: 0 };
+      e.n += 1;
+      if (x.status !== 'SL_HIT') e.w += 1;
+      m.set(k, e);
+    }
+    return [...m.entries()];
+  }, [decided]);
+
+  const byDex = useMemo(() => {
+    const m = new Map<string, { n: number; w: number }>();
+    for (const x of decided) {
+      const k = x.dex === '' ? 'MAIN' : (x.dex ?? 'UNKNOWN').toUpperCase();
+      const e = m.get(k) ?? { n: 0, w: 0 };
+      e.n += 1;
+      if (x.status !== 'SL_HIT') e.w += 1;
+      m.set(k, e);
+    }
+    return [...m.entries()];
+  }, [decided]);
+
+  const byDirection = useMemo(() => {
+    const longs = signals.filter((x) => x.direction === 'LONG').length;
+    const shorts = signals.filter((x) => x.direction === 'SHORT').length;
+    const waits = signals.filter((x) => x.direction === 'WAIT').length;
+    return { longs, shorts, waits };
+  }, [signals]);
+
   return (
     <div>
       <div className="topbar"><div><h1>History</h1><p>Live tracked signals (local). Backtest results live on the Backtest page — never mixed.</p></div></div>
@@ -29,6 +60,21 @@ export default function History(): JSX.Element {
         <Card title="Wins"><div className="big positive">{wins}</div></Card>
         <Card title="Losses"><div className="big negative">{losses}</div></Card>
         <Card title="Avg R:R"><div className="big">{avgRR.toFixed(2)}</div><div className="muted">win rate {decided.length ? ((wins / decided.length) * 100).toFixed(1) : '—'}%</div></Card>
+      </div>
+      <div style={{ marginTop: 12 }} className="grid grid-2">
+        <Card title="Agent evaluation — by asset class">
+          {byCategory.length === 0 ? <div className="muted">No decided signals yet.</div> : (
+            <div className="table-wrap"><table><thead><tr><th>Class</th><th>Decided</th><th>Wins</th><th>Win rate</th></tr></thead>
+            <tbody>{byCategory.map(([k, v]) => <tr key={k}><td><strong>{k}</strong></td><td>{v.n}</td><td>{v.w}</td><td>{((v.w / v.n) * 100).toFixed(1)}%</td></tr>)}</tbody></table></div>
+          )}
+          <div className="muted">Directions tracked: {byDirection.longs} LONG · {byDirection.shorts} SHORT · {byDirection.waits} WAIT. For system evaluation only — not predictive.</div>
+        </Card>
+        <Card title="Agent evaluation — by DEX">
+          {byDex.length === 0 ? <div className="muted">No decided signals yet.</div> : (
+            <div className="table-wrap"><table><thead><tr><th>DEX</th><th>Decided</th><th>Wins</th><th>Win rate</th></tr></thead>
+            <tbody>{byDex.map(([k, v]) => <tr key={k}><td><strong>{k}</strong></td><td>{v.n}</td><td>{v.w}</td><td>{((v.w / v.n) * 100).toFixed(1)}%</td></tr>)}</tbody></table></div>
+          )}
+        </Card>
       </div>
       <div style={{ marginTop: 12 }} className="grid grid-2">
         <Card title="Performance by symbol">

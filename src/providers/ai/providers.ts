@@ -93,14 +93,22 @@ export class OpenAICompatibleProvider implements AIProvider {
   async critique(context: AICritiqueContext): Promise<AICritique> {
     const { buildCriticUserMessage } = await import('../../agents/aiContext');
     const text = await this.complete(this.prompts.critic, buildCriticUserMessage(context));
-    const json = tryParse(text) as { verdict?: Direction; risks?: unknown; critique?: unknown } | null;
+    const json = tryParse(text) as { verdict?: Direction; approval?: unknown; risks?: unknown; critique?: unknown } | null;
     const verdict: Direction = json && (json.verdict === 'LONG' || json.verdict === 'SHORT' || json.verdict === 'WAIT') ? json.verdict : 'WAIT';
+    const downgraded = verdict === 'WAIT' && context.signal.direction !== 'WAIT';
+    const risks = Array.isArray(json?.risks) ? (json.risks as unknown[]).map(String).slice(0, 8) : [];
+    const rawApproval = typeof json?.approval === 'string' ? json.approval.toUpperCase() : '';
+    const approval: AICritique['approval'] =
+      rawApproval === 'APPROVE' || rawApproval === 'CONDITIONAL' || rawApproval === 'REJECT'
+        ? rawApproval
+        : downgraded ? 'REJECT' : risks.length >= 2 ? 'CONDITIONAL' : 'APPROVE';
     return {
       symbol: context.symbol,
       verdict,
-      risks: Array.isArray(json?.risks) ? (json.risks as unknown[]).map(String).slice(0, 8) : [],
+      approval,
+      risks,
       critique: typeof json?.critique === 'string' ? (json.critique as string) : text.slice(0, 1000),
-      downgraded: verdict === 'WAIT' && context.signal.direction !== 'WAIT',
+      downgraded,
       timestamp: Date.now(),
     };
   }
@@ -158,13 +166,17 @@ export class LocalFallbackProvider implements AIProvider {
     }
     const trimmed = risks.slice(0, 5);
     const shouldWait = context.signal.direction !== 'WAIT' && (context.confluence.total < 75 || trimmed.length >= 2);
+    const agrees = !shouldWait;
     return {
       symbol: context.symbol,
       verdict: shouldWait ? 'WAIT' : context.signal.direction,
+      approval: shouldWait ? 'REJECT' : trimmed.length >= 2 ? 'CONDITIONAL' : 'APPROVE',
       risks: trimmed.length ? trimmed : ['No critical flaws found by fallback checks'],
       critique: shouldWait
         ? 'Fallback critic: confluence is not strong enough or multiple opposing factors exist. Wait for confirmation rather than forcing the trade.'
-        : 'Fallback critic: no blocking flaws found in the deterministic setup. Standard risk management still applies.',
+        : agrees && trimmed.length >= 2
+          ? 'Fallback critic: setup stands but carries notable risks — proceed only if the stated conditions hold.'
+          : 'Fallback critic: no blocking flaws found in the deterministic setup. Standard risk management still applies.',
       downgraded: shouldWait && context.signal.direction !== 'WAIT',
       timestamp: Date.now(),
     };

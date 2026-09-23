@@ -1,9 +1,10 @@
 import { create } from 'zustand';
-import type { AssetCategory, FinalTradeAnalysis, HyperliquidMarket, TradingSignal } from '../types';
+import type { AnalysisMemoryEntry, AgentRun, AssetCategory, FinalTradeAnalysis, HyperliquidMarket, ScreenResult, ScreenerStats, TradingSignal } from '../types';
 import type { SymbolAnalysis } from '../services/marketService';
 import type { CategoryFilter } from '../config/app';
 import { APP_CONFIG, resolveDefaultCategory } from '../config/app';
 import { aliasesFor } from '../hyperliquid/symbols';
+import { transitionSignal } from '../core/signals';
 
 interface AppState {
   markets: HyperliquidMarket[];
@@ -42,10 +43,21 @@ interface AppState {
   setLoading: (symbol: string, v: boolean) => void;
   setError: (symbol: string, e: string) => void;
   addSignal: (s: TradingSignal) => void;
-  updateSignal: (s: TradingSignal) => void;
+  updateSignal: (s: TradingSignal, reason?: string) => void;
   selectSymbol: (s: string) => void;
   selectSignal: (id: string | null) => void;
   setFull: (symbol: string, f: FinalTradeAnalysis) => void;
+  /** Structured agent memory per market (capped, summaries only) */
+  memory: Record<string, AnalysisMemoryEntry[]>;
+  recordMemory: (symbol: string, e: AnalysisMemoryEntry) => void;
+  // screener
+  screenResults: ScreenResult[];
+  screenStats: ScreenerStats | null;
+  scanning: boolean;
+  lastScanAt: number | null;
+  autoScanMinutes: number;
+  lastAgentLedger: AgentRun[];
+  setScreener: (r: Partial<Pick<AppState, 'screenResults' | 'screenStats' | 'scanning' | 'lastScanAt' | 'autoScanMinutes' | 'lastAgentLedger'>>) => void;
   setExecutionTimeframe: (tf: string) => void;
   setRisk: (r: Partial<Pick<AppState, 'riskPercent' | 'leverage' | 'accountBalance' | 'aiEnabled'>>) => void;
   marketCategoryOf: (internal: string) => AssetCategory;
@@ -182,15 +194,37 @@ export const useStore = create<AppState>((set, get) => ({
       try { localStorage.setItem(HISTORY_KEY, JSON.stringify(next)); } catch { /* ignore */ }
       return { signals: next };
     }),
-  updateSignal: (sig) =>
+  updateSignal: (sig, reason = 'status update') =>
     set((s) => {
-      const next = s.signals.map((x) => (x.id === sig.id ? sig : x));
+      const next = s.signals.map((x) => {
+        if (x.id !== sig.id) return x;
+        const withStatus = { ...sig, history: x.history?.length ? x.history : sig.history ?? [] };
+        return transitionSignal(withStatus, sig.status, reason);
+      });
       try { localStorage.setItem(HISTORY_KEY, JSON.stringify(next)); } catch { /* ignore */ }
       return { signals: next };
     }),
   selectSymbol: (selectedSymbol) => set({ selectedSymbol }),
   selectSignal: (selectedSignalId) => set({ selectedSignalId }),
   setFull: (symbol, f) => set((s) => ({ fullAnalyses: { ...s.fullAnalyses, [symbol]: f } })),
+  memory: {},
+  recordMemory: (symbol, e) =>
+    set((s) => {
+      const prev = s.memory[symbol] ?? [];
+      const last = prev[prev.length - 1];
+      // Only remember change, not every identical tick.
+      if (last && last.direction === e.direction && last.regime === e.regime && Math.abs(last.confluence - e.confluence) < 5) {
+        return s;
+      }
+      return { memory: { ...s.memory, [symbol]: [...prev, e].slice(-20) } };
+    }),
+  screenResults: [],
+  screenStats: null,
+  scanning: false,
+  lastScanAt: null,
+  autoScanMinutes: 0,
+  lastAgentLedger: [],
+  setScreener: (r) => set(r),
   setExecutionTimeframe: (executionTimeframe) => {
     set({ executionTimeframe });
     try {

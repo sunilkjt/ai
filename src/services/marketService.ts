@@ -31,6 +31,8 @@ export interface SymbolAnalysis {
   /** Discovery timestamp backing this analysis (stale-data protection) */
   discoveryUpdatedAt: number;
   stale: boolean;
+  /** True when synthetic demo candles were used — NEVER yields live signals */
+  demo: boolean;
   price: number;
   change24h: number;
   volume24h: number;
@@ -47,21 +49,22 @@ export interface SymbolAnalysis {
   updatedAt: number;
 }
 
-export async function fetchCandlesCached(coin: string, tf: string, limit = APP_CONFIG.candleLimit): Promise<{ candles: Candle[]; offline: boolean }> {
+export async function fetchCandlesCached(coin: string, tf: string, limit = APP_CONFIG.candleLimit): Promise<{ candles: Candle[]; offline: boolean; demo: boolean }> {
   const key = `${coin}|${tf}|${limit}`;
   const hit = candleCache.get(key);
-  if (hit) return { candles: hit, offline: false };
+  if (hit) return { candles: hit, offline: false, demo: false };
   try {
     const candles = await marketProvider.getCandles(coin, tf, limit);
     if (candles.length >= 20) {
       candleCache.set(key, candles);
-      return { candles, offline: false };
+      return { candles, offline: false, demo: false };
     }
     throw new Error('too few candles');
   } catch {
     const cached = candleCache.get(key);
-    if (cached) return { candles: cached, offline: true };
-    return { candles: demoCandles(100, limit), offline: true };
+    if (cached) return { candles: cached, offline: true, demo: false };
+    // Explicit demo fallback — flagged so it can NEVER produce live signals.
+    return { candles: demoCandles(100, limit), offline: true, demo: true };
   }
 }
 
@@ -94,9 +97,11 @@ export async function analyzeSymbol(
   }
 
   const frames: TimeframeAnalysis[] = [];
+  let demo = false;
   for (const tf of TIMEFRAMES) {
-    const { candles, offline: off } = await fetchCandlesCached(coin, tf.id);
+    const { candles, offline: off, demo: isDemo } = await fetchCandlesCached(coin, tf.id);
     if (off) offline = true;
+    if (isDemo) demo = true;
     frames.push(analyzeTimeframe(tf.id, candles));
     if (Number.isNaN(price) && candles.length) price = candles[candles.length - 1].close;
   }
@@ -111,19 +116,6 @@ export async function analyzeSymbol(
   const assetInsights = analyzeAsset({ category, displaySymbol: display, timeframes: frames, derivatives });
 
   const confluence = computeConfluence(frames, derivatives);
-  const signal = generateSignal({
-    symbol: display,
-    timeframe: executionTimeframe,
-    price,
-    confluence,
-    regime,
-    atr: exec.indicators.atr,
-    swingHigh: exec.structure.lastSwingHigh,
-    swingLow: exec.structure.lastSwingLow,
-    timeframeConflict: conflict,
-  });
-
-  let full: FinalTradeAnalysis | null = null;
   const stale = Date.now() - (market?.updatedAt ?? 0) > APP_CONFIG.marketStaleMs;
   const identity: MarketIdentity = {
     marketId: market?.marketId ?? coin,
@@ -139,6 +131,33 @@ export async function analyzeSymbol(
     venue: 'Hyperliquid',
     stale,
   };
+  let signal = generateSignal({
+    symbol: display,
+    marketId: identity.marketId,
+    dex: identity.dex,
+    category,
+    timeframe: executionTimeframe,
+    price,
+    confluence,
+    regime,
+    atr: exec.indicators.atr,
+    swingHigh: exec.structure.lastSwingHigh,
+    swingLow: exec.structure.lastSwingLow,
+    timeframeConflict: conflict,
+  });
+  if (demo) {
+    // §47: demo candles must NEVER produce live signals.
+    signal = {
+      ...signal,
+      direction: 'WAIT',
+      entry: undefined, stopLoss: undefined, takeProfit1: undefined, takeProfit2: undefined,
+      riskReward: undefined, status: 'INVALIDATED',
+      opposingReasons: ['DEMO DATA — LIVE ANALYSIS UNAVAILABLE', ...signal.opposingReasons],
+      history: [...signal.history, { at: Date.now(), from: 'NEW', to: 'INVALIDATED', reason: 'synthetic demo candles' }],
+    };
+  }
+
+  let full: FinalTradeAnalysis | null = null;
   if (opts.withAI) {
     full = await runFullAnalysis({
       symbol: display, category, identity, executionTimeframe, price, regime, timeframes: frames,
@@ -172,6 +191,7 @@ export async function analyzeSymbol(
     assetInsights,
     full,
     offline,
+    demo,
     updatedAt: Date.now(),
   };
 }

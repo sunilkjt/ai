@@ -54,6 +54,13 @@ export const APP_CONFIG = {
   defaultRiskPercent: 1,
   defaultLeverage: 1,
   aiCacheMs: 1000 * 60 * 5,
+  /** Blend of deterministic confluence vs component detail in setupQuality (0..1) */
+  qualityConfluenceWeight: 0.5,
+  /** Min R:R for a CONFIRMED signal */
+  minRiskReward: 1.2,
+  /** Screener budgets: fast candidates → full pipeline → AI-reviewed */
+  screenerMaxCandidates: 40,
+  screenerMaxAI: 8,
   /** Discovery older than this is flagged STALE and the AI is told it is not live */
   marketStaleMs: 1000 * 60 * 5,
   hyperliquidApi: (import.meta.env.VITE_HYPERLIQUID_API as string | undefined) || 'https://api.hyperliquid.xyz',

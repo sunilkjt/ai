@@ -28,7 +28,11 @@ export default function SignalDetail(): JSX.Element {
       <div className="grid grid-3">
         <Card title="Signal"><dl className="kv">
           <dt>Direction</dt><dd><Badge value={sig.direction} /></dd>
+          <dt>Market</dt><dd>{sig.marketId ?? sig.symbol} · {sig.dex === '' ? 'MAIN' : (sig.dex ?? '—')} · {sig.category ?? '—'}</dd>
           <dt>Confluence</dt><dd>{sig.confluenceScore}/100</dd>
+          <dt>Setup quality</dt><dd>{sig.setupQuality != null ? `${sig.setupQuality}/100 (setup quality, not profit odds)` : '—'}</dd>
+          <dt>Trap risk</dt><dd>{sig.trapRisk ?? '—'}</dd>
+          <dt>AI confidence</dt><dd>{sig.aiConfidence != null ? `${sig.aiConfidence}/100` : '—'}</dd>
           <dt>Regime</dt><dd><RegimeBadge value={sig.marketRegime} /></dd>
           <dt>Status</dt><dd>{sig.status}</dd>
           <dt>Invalidation</dt><dd>{sig.invalidation ?? '—'}</dd>
@@ -61,6 +65,17 @@ export default function SignalDetail(): JSX.Element {
           </Card>
         </div>
       )}
+
+      <div style={{ marginTop: 12 }}>
+        <Card title="Signal lifecycle (recorded transitions)">
+          {(sig.history?.length ?? 0) === 0 && <div className="muted">No transitions recorded.</div>}
+          <ul className="tight">
+            {(sig.history ?? []).map((h, i) => (
+              <li key={i}>{new Date(h.at).toLocaleString()}: {h.from} → <strong>{h.to}</strong> — {h.reason}</li>
+            ))}
+          </ul>
+        </Card>
+      </div>
 
       <div style={{ marginTop: 12 }}>
         <Card title="Why you should WAIT / ACT">

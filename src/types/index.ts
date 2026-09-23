@@ -306,11 +306,24 @@ export interface ConfluenceResult {
 }
 
 export type SignalStatus =
-  | 'NEW' | 'ACTIVE' | 'TP1_HIT' | 'TP2_HIT' | 'SL_HIT' | 'EXPIRED' | 'INVALIDATED';
+  | 'NEW' | 'ACTIVE' | 'TP1_HIT' | 'TP2_HIT' | 'SL_HIT' | 'EXPIRED' | 'INVALIDATED'
+  | 'WATCHING' | 'CANDIDATE' | 'AI_REVIEW' | 'CONFIRMED' | 'CONDITIONAL';
+
+export type TrapRisk = 'LOW' | 'MEDIUM' | 'HIGH';
+
+export interface SignalEvent {
+  at: number;
+  from: SignalStatus | 'NONE';
+  to: SignalStatus;
+  reason: string;
+}
 
 export interface TradingSignal {
   id: string;
   symbol: string;
+  marketId?: string;
+  dex?: string;
+  category?: AssetCategory;
   direction: Direction;
   timeframe: string;
   entry?: number;
@@ -320,11 +333,17 @@ export interface TradingSignal {
   takeProfit3?: number;
   riskReward?: number;
   confluenceScore: number;
+  /** Transparent setup-quality score (0-100) — NOT profit probability */
+  setupQuality?: number;
+  trapRisk?: TrapRisk;
+  aiConfidence?: number | null;
   supportingReasons: string[];
   opposingReasons: string[];
   invalidation?: string;
   marketRegime: MarketRegime;
   status: SignalStatus;
+  /** Recorded lifecycle transitions (candidate → review → confirmed → …) */
+  history: SignalEvent[];
   timestamp: number;
   expiresAt: number;
 }
@@ -366,6 +385,8 @@ export interface AIAnalysis {
 export interface AICritique {
   symbol: string;
   verdict: Direction;
+  /** APPROVE = setup stands · CONDITIONAL = only with stated conditions · REJECT = do not take */
+  approval: 'APPROVE' | 'CONDITIONAL' | 'REJECT';
   risks: string[];
   critique: string;
   downgraded: boolean;
@@ -391,6 +412,130 @@ export interface FinalTradeAnalysis {
   tradePlan: string[];
   timestamp: number;
   aiAvailable: boolean;
+}
+
+// ---- Multi-agent screener contracts ----
+
+export type AgentName =
+  | 'discovery' | 'market-data' | 'mtf' | 'technical' | 'structure'
+  | 'smc' | 'ict' | 'derivatives' | 'asset-class' | 'confluence'
+  | 'long' | 'short' | 'contrarian' | 'trap' | 'critic' | 'risk' | 'final';
+
+export interface AgentRun {
+  agent: AgentName;
+  status: 'ok' | 'skipped' | 'failed';
+  summary: string;
+  durationMs: number;
+  at: number;
+}
+
+export interface ComponentScores {
+  trend: number; mtf: number; structure: number; momentum: number;
+  volume: number; smc: number; ict: number; liquidity: number;
+  derivatives: number; risk: number;
+}
+
+export interface SetupCheck {
+  name: string;
+  pass: boolean;
+  detail: string;
+}
+
+export interface SetupEvaluation {
+  side: 'LONG' | 'SHORT';
+  candidate: boolean;
+  checks: SetupCheck[];
+  /** Human-readable blockers, e.g. "Waiting for: 15M BOS confirmation" */
+  missing: string[];
+}
+
+export type ScreenStatus =
+  | 'WATCHING' | 'CANDIDATE' | 'AI_REVIEW' | 'CONFIRMED' | 'CONDITIONAL'
+  | 'INVALIDATED' | 'EXPIRED' | 'REJECTED';
+
+export interface ScreenResult {
+  marketId: string;
+  displaySymbol: string;
+  assetName: string;
+  dex: string;
+  dexLabel: string;
+  category: AssetCategory;
+  price: number | null;
+  change24h: number | null;
+  trend: string;
+  mtfBias: string;
+  confluence: number;
+  setupQuality: number | null;
+  scores: ComponentScores | null;
+  trapRisk: TrapRisk | null;
+  trapNotes: string[];
+  longSetup: SetupEvaluation | null;
+  shortSetup: SetupEvaluation | null;
+  aiDirection: Direction;
+  aiConfidence: number | null;
+  aiProvider: string | null;
+  entry: number | null;
+  stopLoss: number | null;
+  takeProfit1: number | null;
+  takeProfit2: number | null;
+  riskReward: number | null;
+  status: ScreenStatus;
+  statusReason: string;
+  why: string[];
+  against: string[];
+  invalidation: string;
+  criticSummary: string | null;
+  explanation: string | null;
+  demo: boolean;
+  stale: boolean;
+  updatedAt: number;
+}
+
+export interface ScreenerStats {
+  scanned: number;
+  skippedDemo: number;
+  fastCandidates: number;
+  aiReviewed: number;
+  longCount: number;
+  shortCount: number;
+  waitCount: number;
+  rejected: number;
+  startedAt: number;
+  finishedAt: number;
+  durationMs: number;
+}
+
+/** Validated final AI signal output (§54) */
+export interface AISignal {
+  marketId: string;
+  dex: string;
+  category: AssetCategory;
+  decision: FinalDecision;
+  status: ScreenStatus;
+  aiConfidence: number;
+  setupQuality: number;
+  trapRisk: TrapRisk;
+  confluence: number;
+  timeframeAlignment: string;
+  entry: number | null;
+  stopLoss: number | null;
+  takeProfit1: number | null;
+  takeProfit2: number | null;
+  riskReward: number | null;
+  supportingFactors: string[];
+  opposingFactors: string[];
+  invalidation: string;
+  critic: string;
+  explanation: string;
+}
+
+export interface AnalysisMemoryEntry {
+  at: number;
+  decision: string;
+  regime: MarketRegime;
+  direction: Direction;
+  confluence: number;
+  summary: string;
 }
 
 // ---- AI provider abstraction ----

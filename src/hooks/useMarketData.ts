@@ -72,15 +72,29 @@ export function useMarketPolling(withAI = false, limit = 12): void {
         });
         store.setAnalysis(key, analysis);
         if (withAI && analysis.full) store.setFull(key, analysis.full);
+        store.recordMemory(key, {
+          at: Date.now(),
+          decision: analysis.signal.direction,
+          regime: analysis.regime,
+          direction: analysis.signal.direction,
+          confluence: analysis.signal.confluenceScore,
+          summary: `${analysis.signal.direction} · ${analysis.regime} · conf ${analysis.signal.confluenceScore}`,
+        });
         const sig = analysis.signal;
-        if (sig.direction !== 'WAIT') {
+        // Demo data never yields tracked signals.
+        if (!analysis.demo && sig.direction !== 'WAIT') {
           const exists = store.signals.some((x) => x.id === sig.id);
           if (!exists) {
             const dup = store.signals.some(
               (x) => x.symbol === sig.symbol && x.timeframe === sig.timeframe && x.direction === sig.direction && Math.abs(x.timestamp - sig.timestamp) < 1000 * 60 * 15,
             );
             if (!dup) {
-              store.addSignal(sig);
+              store.addSignal({
+                ...sig,
+                marketId: analysis.marketId,
+                dex: analysis.dex,
+                category: analysis.category,
+              });
               log('SIGNAL', `${sig.symbol} ${sig.direction} @ ${sig.entry} (confluence ${sig.confluenceScore})`);
             }
           }
@@ -89,7 +103,12 @@ export function useMarketPolling(withAI = false, limit = 12): void {
           if (open.symbol !== sig.symbol) continue;
           if (!['NEW', 'ACTIVE'].includes(open.status)) continue;
           const next = evaluateSignalLifecycle(open, analysis.price);
-          if (next !== open.status) useStore.getState().updateSignal({ ...open, status: next });
+          if (next !== open.status) {
+            useStore.getState().updateSignal(
+              { ...open, status: next },
+              `lifecycle on ${analysis.symbol} @ ${analysis.price}`,
+            );
+          }
         }
       } catch (e) {
         store.setError(key, e instanceof Error ? e.message : 'fetch failed');

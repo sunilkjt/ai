@@ -5,11 +5,13 @@ import { useMarketDiscovery } from '../hooks/useMarketData';
 
 const LINKS = [
   { to: '/', label: 'Dashboard', icon: '◈' },
+  { to: '/screener', label: 'Market Screener', icon: '◎' },
   { to: '/markets', label: 'Markets', icon: '▦' },
   { to: '/analyst', label: 'AI Analyst', icon: '✦' },
   { to: '/signals', label: 'Signals', icon: '⚡' },
   { to: '/watchlist', label: 'Watchlist', icon: '★' },
   { to: '/backtest', label: 'Backtest', icon: '⬣' },
+  { to: '/agents', label: 'Agent Monitor', icon: '⬡' },
   { to: '/history', label: 'History', icon: '◔' },
   { to: '/settings', label: 'Settings', icon: '⚙' },
 ];

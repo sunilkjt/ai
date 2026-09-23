@@ -1,11 +1,14 @@
 // Signal engine: deterministic LONG/SHORT/WAIT + lifecycle evaluation on polled prices.
-import type { ConfluenceResult, Direction, MarketRegime, SignalStatus, TradingSignal } from '../types';
+import type { AssetCategory, ConfluenceResult, Direction, MarketRegime, SignalStatus, TradingSignal } from '../types';
 import { APP_CONFIG } from '../config/app';
 
 let counter = 0;
 
 export function generateSignal(params: {
   symbol: string;
+  marketId?: string;
+  dex?: string;
+  category?: AssetCategory;
   timeframe: string;
   price: number;
   confluence: ConfluenceResult;
@@ -54,12 +57,15 @@ export function generateSignal(params: {
   if (direction === 'WAIT' && confluence.total < 55) opposing.unshift(`Confluence ${confluence.total}/100 below threshold`);
 
   return {
-    id, symbol, direction, timeframe, entry: direction === 'WAIT' ? undefined : entry,
+    id, symbol, marketId: params.marketId, dex: params.dex, category: params.category,
+    direction, timeframe, entry: direction === 'WAIT' ? undefined : entry,
     stopLoss, takeProfit1, takeProfit2, takeProfit3: undefined,
     riskReward, confluenceScore: confluence.total,
+    setupQuality: undefined, trapRisk: undefined, aiConfidence: null,
     supportingReasons: confluence.supportingReasons,
     opposingReasons: opposing,
     invalidation, marketRegime: regime, status: 'NEW',
+    history: [{ at: timestamp, from: 'NONE', to: 'NEW', reason: `deterministic ${direction} (confluence ${confluence.total}/100)` }],
     timestamp, expiresAt: timestamp + APP_CONFIG.signalExpiryMs,
   };
 }
@@ -83,4 +89,14 @@ export function evaluateSignalLifecycle(signal: TradingSignal, price: number, no
 
 export function isDuplicate(a: TradingSignal, b: TradingSignal): boolean {
   return a.symbol === b.symbol && a.timeframe === b.timeframe && a.direction === b.direction && Math.abs(a.timestamp - b.timestamp) < 1000 * 60 * 15;
+}
+
+/** Recorded lifecycle transition — every status change carries its reason. */
+export function transitionSignal(signal: TradingSignal, to: SignalStatus, reason: string, at = Date.now()): TradingSignal {
+  if (to === signal.status) return signal;
+  return {
+    ...signal,
+    status: to,
+    history: [...signal.history, { at, from: signal.status, to, reason }].slice(-50),
+  };
 }

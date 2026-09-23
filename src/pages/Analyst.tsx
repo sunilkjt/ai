@@ -9,6 +9,24 @@ import { Card, Badge, RegimeBadge, CategoryBadge } from '../components/ui';
 import { fmtPrice } from '../utils/format';
 import { log } from '../utils/logger';
 
+function AgentMemoryCard({ symbol, current }: { symbol: string; current: string }): JSX.Element | null {
+  const memory = useStore((s) => s.memory);
+  const entries = useMemo(() => (memory[symbol] ?? []).slice(-3).reverse(), [memory, symbol]);
+  if (entries.length === 0) return null;
+  return (
+    <div style={{ marginTop: 12 }}>
+      <Card title="Agent memory — what changed">
+        <div className="muted">Now: {current}</div>
+        <ul className="tight">
+          {entries.map((e, i) => (
+            <li key={i}>{new Date(e.at).toLocaleTimeString()}: {e.summary}</li>
+          ))}
+        </ul>
+      </Card>
+    </div>
+  );
+}
+
 export default function Analyst(): JSX.Element {
   useMarketPolling(false);
   const markets = useStore((s) => s.markets);
@@ -158,6 +176,8 @@ export default function Analyst(): JSX.Element {
               </Card>
             </div>
           )}
+
+          <AgentMemoryCard symbol={analysis.symbol} current={`${analysis.signal.direction} · ${analysis.regime} · conf ${analysis.signal.confluenceScore}`} />
 
           {full?.ai && (
             <div className="grid grid-2" style={{ marginTop: 12 }}>

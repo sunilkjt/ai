@@ -43,7 +43,8 @@ export default function Dashboard(): JSX.Element {
           <p>{APP_CONFIG.tagline} — live perp discovery, multi-timeframe engine, AI on demand.</p>
         </div>
         <div className="row">
-          <Link className="btn" to="/markets">Browse markets</Link>
+          <Link className="btn" to="/screener">AI Market Screener</Link>
+          <Link className="btn secondary" to="/markets">Browse markets</Link>
           <Link className="btn secondary" to="/analyst">Open AI Analyst</Link>
         </div>
       </div>

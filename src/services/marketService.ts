@@ -1,7 +1,7 @@
 // Market service (Hyperliquid-first): discovery → candles → MTF →
 // confluence → deterministic signal → asset-aware insights → AI (on demand).
 // AI is NEVER called per tick — only when withAI=true (user request / signal / refresh).
-import type { AssetCategory, Candle, DerivativesAnalysis, FinalTradeAnalysis, HyperliquidContext, HyperliquidMarket, MarketRegime, TimeframeAnalysis, TradingSignal } from '../types';
+import type { AssetCategory, Candle, DerivativesAnalysis, FinalTradeAnalysis, HyperliquidContext, HyperliquidMarket, MarketIdentity, MarketRegime, TimeframeAnalysis, TradingSignal } from '../types';
 import { APP_CONFIG, TIMEFRAMES } from '../config/app';
 import type { MarketDataProvider } from '../types';
 import { HyperliquidProvider, demoCandles, findMarket, getDiscoveredMarkets } from '../providers/market-data/hyperliquid';
@@ -20,8 +20,17 @@ export const marketProvider: MarketDataProvider = new HyperliquidProvider();
 
 export interface SymbolAnalysis {
   internalSymbol: string;
+  marketId: string;
   symbol: string; // display, e.g. TSLA / GOLD / BTC
+  assetName: string;
+  dex: string;
+  dexLabel: string;
   category: AssetCategory;
+  /** Full identity snapshot for the AI + UI (includes staleness) */
+  identity: MarketIdentity;
+  /** Discovery timestamp backing this analysis (stale-data protection) */
+  discoveryUpdatedAt: number;
+  stale: boolean;
   price: number;
   change24h: number;
   volume24h: number;
@@ -115,9 +124,24 @@ export async function analyzeSymbol(
   });
 
   let full: FinalTradeAnalysis | null = null;
+  const stale = Date.now() - (market?.updatedAt ?? 0) > APP_CONFIG.marketStaleMs;
+  const identity: MarketIdentity = {
+    marketId: market?.marketId ?? coin,
+    dex: market?.dex ?? '',
+    dexLabel: market?.dexLabel ?? 'MAIN',
+    internalSymbol: coin,
+    displaySymbol: display,
+    displayName: market?.assetName ?? display,
+    underlying: market?.underlying ?? display,
+    category,
+    classificationSource: market?.classificationSource ?? 'UNKNOWN',
+    instrument: 'PERP',
+    venue: 'Hyperliquid',
+    stale,
+  };
   if (opts.withAI) {
     full = await runFullAnalysis({
-      symbol: display, category, executionTimeframe, price, regime, timeframes: frames,
+      symbol: display, category, identity, executionTimeframe, price, regime, timeframes: frames,
       confluence, signal, derivatives, hyperliquid, assetInsights,
       provider: opts.aiProvider ?? null,
       riskOpts: opts.riskOpts,
@@ -126,8 +150,15 @@ export async function analyzeSymbol(
 
   return {
     internalSymbol: coin,
+    marketId: identity.marketId,
     symbol: display,
+    assetName: identity.displayName,
+    dex: identity.dex,
+    dexLabel: identity.dexLabel,
     category,
+    identity,
+    discoveryUpdatedAt: market?.updatedAt ?? 0,
+    stale,
     price,
     change24h,
     volume24h: derivatives.dayVolumeNotional ?? 0,

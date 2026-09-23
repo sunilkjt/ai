@@ -30,17 +30,14 @@ export const CATEGORY_FILTERS: CategoryFilter[] = [
   'CRYPTO',
 ];
 
-export const DEFAULT_CATEGORY: CategoryFilter =
-  ((import.meta.env.VITE_DEFAULT_CATEGORY as string | undefined) as CategoryFilter) || 'STOCKS' as unknown as CategoryFilter;
-
-// Normalize env default ("STOCKS" plural) to AssetCategory ("STOCK")
+// Default category comes from env (VITE_DEFAULT_CATEGORY, plural "STOCKS" accepted)
+// and falls back to STOCK — never crypto.
 export function resolveDefaultCategory(): CategoryFilter {
+  const valid: CategoryFilter[] = ['ALL', 'STOCK', 'COMMODITY', 'INDEX', 'FOREX', 'CRYPTO'];
   const raw = ((import.meta.env.VITE_DEFAULT_CATEGORY as string | undefined) || 'STOCKS').toUpperCase();
   if (raw === 'STOCKS') return 'STOCK';
-  if ((['ALL', 'STOCK', 'COMMODITY', 'INDEX', 'FOREX', 'CRYPTO'] as string[]).includes(raw)) {
-    return raw as CategoryFilter;
-  }
-  return 'STOCK';
+  const match = valid.find((c) => c === raw);
+  return match ?? 'STOCK';
 }
 
 export const APP_CONFIG = {
@@ -57,6 +54,8 @@ export const APP_CONFIG = {
   defaultRiskPercent: 1,
   defaultLeverage: 1,
   aiCacheMs: 1000 * 60 * 5,
+  /** Discovery older than this is flagged STALE and the AI is told it is not live */
+  marketStaleMs: 1000 * 60 * 5,
   hyperliquidApi: (import.meta.env.VITE_HYPERLIQUID_API as string | undefined) || 'https://api.hyperliquid.xyz',
   disclaimer: 'AI assessment confidence is not probability of profit. Informational only — not financial advice. No auto-trading in v1.',
 };

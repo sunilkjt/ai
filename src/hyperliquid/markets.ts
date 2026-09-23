@@ -3,7 +3,7 @@
 // with the dex parameter, so stocks/commodities/indices/forex are included.
 // Never hard-codes BTC/ETH/SOL as the universe.
 import type { HyperliquidAssetCtx, HyperliquidMarket } from '../types';
-import { classifyMarket, toDisplaySymbol, toUnderlying } from './symbols';
+import { assetNameFor, classifyMarket, dexLabelFor, marketIdFor, toDisplaySymbol, toUnderlying } from './symbols';
 import { hlPost, type HLAssetCtx, type MetaAndCtxs } from './client';
 
 function num(v: string | null | undefined): number | null {
@@ -57,24 +57,35 @@ export async function discoverMarkets(): Promise<HyperliquidMarket[]> {
     if (r.status !== 'fulfilled') return;
     const [meta, ctxs] = r.value;
     const dex = dexes[i] ?? '';
+    const now = Date.now();
     meta.universe.forEach((u, j) => {
       if (u.isDelisted) return;
-      if (out.some((m) => m.internalSymbol === u.name)) return;
+      // Identity is dex-qualified: identical symbols on different DEXes are
+      // preserved as separate markets and must never overwrite each other.
+      const marketId = marketIdFor(u.name, dex);
+      if (out.some((m) => m.marketId === marketId)) return;
       const ctx = toCtx(ctxs[j]);
-      const { category, reason } = classifyMarket(u.name, dex);
+      const { category, reason, source } = classifyMarket(u.name, dex);
+      const displaySymbol = toDisplaySymbol(u.name);
       const mark = ctx?.markPx ?? ctx?.midPx ?? ctx?.oraclePx ?? null;
       const prev = ctx?.prevDayPx ?? null;
       out.push({
+        marketId,
         internalSymbol: u.name,
-        displaySymbol: toDisplaySymbol(u.name),
+        displaySymbol,
+        assetName: assetNameFor(displaySymbol),
         underlying: toUnderlying(u.name),
         category,
+        classificationSource: source,
         dex,
+        dexLabel: dexLabelFor(dex),
         maxLeverage: u.maxLeverage ?? 10,
         szDecimals: u.szDecimals ?? 3,
         onlyIsolated: Boolean(u.onlyIsolated),
         isDelisted: Boolean(u.isDelisted),
         classificationReason: reason,
+        discoveredAt: now,
+        updatedAt: now,
         ctx,
         price: mark,
         priceChangePercent24h:

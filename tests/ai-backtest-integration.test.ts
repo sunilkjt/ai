@@ -55,7 +55,7 @@ describe('AI validation', () => {
     const tf = analyzeTimeframe('15m', cs);
     const conf = computeConfluence([tf], EMPTY_DERIV);
     const sig = generateSignal({ symbol: 'BTC', timeframe: '15m', price: cs[cs.length - 1].close, confluence: conf, regime: 'RANGE', atr: 1, swingHigh: null, swingLow: null, timeframeConflict: false });
-    const ctx: AIContext = { symbol: 'BTC', category: 'CRYPTO', price: 100, executionTimeframe: '15m', regime: 'RANGE', timeframes: [tf], confluence: conf, signal: sig, derivatives: EMPTY_DERIV, hyperliquid: null, assetInsights: [], risk: null };
+    const ctx: AIContext = { symbol: 'BTC', category: 'CRYPTO', identity: null, price: 100, executionTimeframe: '15m', regime: 'RANGE', timeframes: [tf], confluence: conf, signal: sig, derivatives: EMPTY_DERIV, hyperliquid: null, assetInsights: [], risk: null };
     const fb = new LocalFallbackProvider();
     const a = await fb.analyze(ctx);
     expect(a.provider).toBe('local-fallback');
@@ -91,7 +91,7 @@ describe('integration pipeline', () => {
     const conf = computeConfluence([tf], EMPTY_DERIV);
     const sig = generateSignal({ symbol: 'ETH', timeframe: '15m', price: cs[cs.length - 1].close, confluence: conf, regime: 'TRENDING_BULLISH', atr: 5, swingHigh: null, swingLow: null, timeframeConflict: false });
     const full = await runFullAnalysis({
-      symbol: 'ETH', category: 'CRYPTO', executionTimeframe: '15m', price: cs[cs.length - 1].close, regime: 'TRENDING_BULLISH',
+      symbol: 'ETH', category: 'CRYPTO', identity: null, executionTimeframe: '15m', price: cs[cs.length - 1].close, regime: 'TRENDING_BULLISH',
       timeframes: [tf], confluence: conf, signal: sig,
       derivatives: EMPTY_DERIV, hyperliquid: null, assetInsights: [],
       provider: new LocalFallbackProvider(),
@@ -144,9 +144,9 @@ describe('Hyperliquid derivatives + context', () => {
   it('buildHyperliquidContext separates underlying vs perp behavior', () => {
     const ctx = buildHyperliquidContext(
       {
-        internalSymbol: 'BTC', displaySymbol: 'BTC', underlying: 'BTC', category: 'CRYPTO',
-        dex: '', maxLeverage: 50, szDecimals: 5, onlyIsolated: false, isDelisted: false,
-        classificationReason: 'known crypto',
+        marketId: 'BTC', internalSymbol: 'BTC', displaySymbol: 'BTC', assetName: 'Bitcoin', underlying: 'BTC', category: 'CRYPTO',
+        classificationSource: 'MAPPING', dex: '', dexLabel: 'MAIN', maxLeverage: 50, szDecimals: 5, onlyIsolated: false, isDelisted: false,
+        classificationReason: 'known crypto', discoveredAt: Date.now(), updatedAt: Date.now(),
         ctx: { markPx: 100, oraclePx: 100, midPx: 100, funding: 0.001, openInterest: 1000, dayNtlVlm: 5000, prevDayPx: 99, premium: 0.0001 },
         price: 100, priceChangePercent24h: 1,
       },

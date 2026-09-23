@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { CATEGORY_FILTERS } from '../config/app';
 import type { CategoryFilter } from '../config/app';
 import { CATEGORY_LABELS } from '../types';
+import { dexLabelFor } from '../hyperliquid/symbols';
 
 export function Card({ title, children, action }: { title?: string; children: ReactNode; action?: ReactNode }): JSX.Element {
   return (
@@ -54,4 +55,31 @@ export function CategoryTabs({ value, onChange, counts }: {
 
 export function CategoryBadge({ value }: { value: string }): JSX.Element {
   return <span className="badge">{value}</span>;
+}
+
+export function DexTabs({ value, dexes, onChange }: {
+  value: string;
+  /** Actual dex identifiers discovered live ('' = MAIN). Never hard-coded. */
+  dexes: string[];
+  onChange: (d: string) => void;
+}): JSX.Element {
+  return (
+    <div className="row" role="tablist" aria-label="DEX">
+      <span className="muted">DEX</span>
+      <button role="tab" aria-selected={value === 'ALL'} className={`btn${value === 'ALL' ? '' : ' secondary'}`} onClick={() => onChange('ALL')}>
+        ALL
+      </button>
+      {dexes.map((d) => (
+        <button
+          key={d === '' ? 'main' : d}
+          role="tab"
+          aria-selected={value === d}
+          className={`btn${value === d ? '' : ' secondary'}`}
+          onClick={() => onChange(d)}
+        >
+          {dexLabelFor(d)}
+        </button>
+      ))}
+    </div>
+  );
 }

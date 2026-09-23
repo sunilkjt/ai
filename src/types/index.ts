@@ -52,21 +52,33 @@ export const CATEGORY_LABELS: Record<AssetCategory, string> = {
   UNKNOWN: 'Unknown',
 };
 
+export type ClassificationSource = 'METADATA' | 'DEX' | 'PATTERN' | 'MAPPING' | 'UNKNOWN';
+
 export interface HyperliquidMarketMeta {
+  /** Unique market identity: `${dex}:${internalSymbol}` (main dex: internal symbol alone) */
+  marketId: string;
   /** Raw coin name on Hyperliquid, e.g. "BTC" or "xyz:TSLA" */
   internalSymbol: string;
   /** Human display symbol, e.g. "TSLA" */
   displaySymbol: string;
+  /** Display asset name enrichment (curated, e.g. "Apple", "Gold"); falls back to display symbol */
+  assetName: string;
   /** Underlying reference where resolvable, e.g. "TSLA" / "GOLD" / "EURUSD" */
   underlying: string;
   category: AssetCategory;
+  classificationSource: ClassificationSource;
   /** Which perp dex this market belongs to ("" = main dex) */
   dex: string;
+  /** Human DEX label: "MAIN" for the main dex, else the actual dex identifier */
+  dexLabel: string;
   maxLeverage: number;
   szDecimals: number;
   onlyIsolated: boolean;
   isDelisted: boolean;
   classificationReason: string;
+  /** Discovery timestamps for stale-data protection */
+  discoveredAt: number;
+  updatedAt: number;
 }
 
 export interface HyperliquidAssetCtx {
@@ -84,6 +96,22 @@ export interface HyperliquidMarket extends HyperliquidMarketMeta {
   ctx: HyperliquidAssetCtx | null;
   price: number | null;
   priceChangePercent24h: number | null;
+}
+
+/** Full market identity sent to the AI — never just a bare symbol. */
+export interface MarketIdentity {
+  marketId: string;
+  dex: string;
+  dexLabel: string;
+  internalSymbol: string;
+  displaySymbol: string;
+  displayName: string;
+  underlying: string;
+  category: AssetCategory;
+  classificationSource: ClassificationSource;
+  instrument: 'PERP';
+  venue: 'Hyperliquid';
+  stale: boolean;
 }
 
 export interface HyperliquidSymbolInfo {
@@ -370,6 +398,8 @@ export interface FinalTradeAnalysis {
 export interface AIContext {
   symbol: string;
   category: AssetCategory;
+  /** Full Hyperliquid market identity — the AI must know exactly which market this is */
+  identity: MarketIdentity | null;
   price: number;
   executionTimeframe: string;
   regime: MarketRegime;

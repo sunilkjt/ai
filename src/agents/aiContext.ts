@@ -6,6 +6,16 @@ function fmt(n: number | null | undefined, digits = 2): string {
 }
 
 export function buildAnalystUserMessage(ctx: AIContext): string {
+  const id = ctx.identity;
+  const identityBlock = id
+    ? `Market identity (Hyperliquid is the source of truth):
+- marketId: ${id.marketId}
+- DEX: ${id.dexLabel} (identifier "${id.dex || 'main'}")
+- internal symbol: ${id.internalSymbol} · display: ${id.displaySymbol} · name: ${id.displayName}
+- underlying: ${id.underlying}
+- instrument: ${id.instrument} · venue: ${id.venue} · category: ${id.category} (via ${id.classificationSource})
+- data: ${id.stale ? 'STALE — do NOT present as live' : 'live'}`
+    : 'Market identity unavailable — state this clearly and do not guess the venue.';
   const tfLines = ctx.timeframes
     .map(
       (t) =>
@@ -16,7 +26,8 @@ export function buildAnalystUserMessage(ctx: AIContext): string {
     ? `Underlying trend=${ctx.hyperliquid.underlyingTrend}, OI trend=${ctx.hyperliquid.openInterestTrend}, funding=${ctx.hyperliquid.fundingState}, premium=${ctx.hyperliquid.premiumState}, crowding=${ctx.hyperliquid.crowdingRisk}. ${ctx.hyperliquid.interpretation}`
     : 'Hyperliquid perp context unavailable';
   return `Symbol: ${ctx.symbol} (${ctx.category} perp on Hyperliquid)
-Current price: ${ctx.price}
+${identityBlock}
+Last price: ${ctx.price} · mark: ${fmt(ctx.derivatives.markPrice)} · oracle: ${fmt(ctx.derivatives.oraclePrice)} (distinct sources — do not conflate)
 Execution timeframe: ${ctx.executionTimeframe}
 Market regime: ${ctx.regime}
 

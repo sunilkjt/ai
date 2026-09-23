@@ -57,6 +57,7 @@ export function decideFinal(signal: TradingSignal, ai: AIAnalysis | null, critiq
 export async function runFullAnalysis(params: {
   symbol: string;
   category: AssetCategory;
+  identity: import('../types').MarketIdentity | null;
   executionTimeframe: string;
   price: number;
   regime: MarketRegime;
@@ -70,7 +71,7 @@ export async function runFullAnalysis(params: {
   riskOpts?: { accountBalance?: number; riskPercent?: number; leverage?: number };
   forceRefresh?: boolean;
 }): Promise<FinalTradeAnalysis> {
-  const { symbol, category, executionTimeframe, price, regime, timeframes, confluence, signal, derivatives, hyperliquid, assetInsights, provider, riskOpts } = params;
+  const { symbol, category, identity, executionTimeframe, price, regime, timeframes, confluence, signal, derivatives, hyperliquid, assetInsights, provider, riskOpts } = params;
   const risk = computeRisk(signal, riskOpts);
   const hash = structureHash(timeframes);
   const key = analysisCacheKey(symbol, executionTimeframe, signal.id, hash);
@@ -80,7 +81,7 @@ export async function runFullAnalysis(params: {
   }
 
   const active: AIProvider = provider ?? new LocalFallbackProvider();
-  const ctx: AIContext = { symbol, category, price, executionTimeframe, regime, timeframes, confluence, signal, derivatives, hyperliquid, assetInsights, risk };
+  const ctx: AIContext = { symbol, category, identity, price, executionTimeframe, regime, timeframes, confluence, signal, derivatives, hyperliquid, assetInsights, risk };
 
   let ai: AIAnalysis | null = null;
   let critique: AICritique | null = null;

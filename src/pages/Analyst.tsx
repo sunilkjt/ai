@@ -13,6 +13,7 @@ export default function Analyst(): JSX.Element {
   useMarketPolling(false);
   const markets = useStore((s) => s.markets);
   const category = useStore((s) => s.category);
+  const dexFilter = useStore((s) => s.dexFilter);
   const search = useStore((s) => s.search);
   const selectedSymbol = useStore((s) => s.selectedSymbol);
   const selectSymbol = useStore((s) => s.selectSymbol);
@@ -30,7 +31,7 @@ export default function Analyst(): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
-  const options = useMemo(() => filteredMarkets({ markets, category, search }).slice(0, 200), [markets, category, search]);
+  const options = useMemo(() => filteredMarkets({ markets, category, search, dexFilter }).slice(0, 200), [markets, category, search, dexFilter]);
   const effectiveSymbol = options.some((m) => m.internalSymbol === selectedSymbol) ? selectedSymbol : (options[0]?.internalSymbol ?? selectedSymbol);
   const analysis = analyses[effectiveSymbol];
   const full = fullAnalyses[effectiveSymbol];
@@ -54,6 +55,7 @@ export default function Analyst(): JSX.Element {
         const result = await runFullAnalysis({
           symbol: analysis.symbol,
           category: analysis.category,
+          identity: analysis.identity,
           executionTimeframe,
           price: analysis.price,
           regime: analysis.regime,
@@ -93,7 +95,7 @@ export default function Analyst(): JSX.Element {
         </div>
         <div className="row">
           <select value={effectiveSymbol} onChange={(e) => selectSymbol(e.target.value)}>
-            {options.map((m) => <option key={m.internalSymbol} value={m.internalSymbol}>{m.displaySymbol} · {m.category}</option>)}
+            {options.map((m) => <option key={m.internalSymbol} value={m.internalSymbol}>{m.displaySymbol} · {m.assetName} · {m.category} · {m.dexLabel}</option>)}
           </select>
           <select value={executionTimeframe} onChange={(e) => setExecutionTimeframe(e.target.value)}>
             {TIMEFRAMES.map((t) => <option key={t.id} value={t.id}>{t.id} — {t.label}</option>)}
@@ -109,6 +111,26 @@ export default function Analyst(): JSX.Element {
 
       {analysis && (
         <>
+          <div style={{ marginBottom: 12 }}>
+            <Card
+              title={`Market · ${analysis.assetName}`}
+              action={analysis.stale ? <span className="badge wait">STALE — not live</span> : <span className="badge">LIVE</span>}
+            >
+              <dl className="kv">
+                <dt>Market</dt><dd>{analysis.symbol} · {analysis.assetName}</dd>
+                <dt>DEX</dt><dd>{analysis.dexLabel} ({analysis.dex === '' ? 'main Hyperliquid dex' : `actual dex "${analysis.dex}"`})</dd>
+                <dt>Underlying</dt><dd>{analysis.identity.underlying}</dd>
+                <dt>Category</dt><dd><CategoryBadge value={analysis.category} /> <span className="muted">via {analysis.identity.classificationSource}</span></dd>
+                <dt>Last</dt><dd>{fmtPrice(analysis.price)}</dd>
+                <dt>Mark</dt><dd>{analysis.derivatives.markPrice != null ? fmtPrice(analysis.derivatives.markPrice) : 'N/A'}</dd>
+                <dt>Oracle</dt><dd>{analysis.derivatives.oraclePrice != null ? fmtPrice(analysis.derivatives.oraclePrice) : 'N/A'}</dd>
+                <dt>24H volume</dt><dd>{analysis.derivatives.dayVolumeNotional != null ? `$${Math.round(analysis.derivatives.dayVolumeNotional).toLocaleString()}` : 'N/A'}</dd>
+                <dt>Open interest</dt><dd>{analysis.openInterest != null ? analysis.openInterest.toLocaleString() : 'N/A'}</dd>
+                <dt>Funding</dt><dd>{analysis.fundingRate != null ? `${(analysis.fundingRate * 100).toFixed(4)}%` : 'N/A'}</dd>
+              </dl>
+              {analysis.stale && <div className="muted">Discovery data is stale — the AI is told not to present this read as live.</div>}
+            </Card>
+          </div>
           <div className="grid grid-4">
             <Card title="Market regime"><div className="big"><RegimeBadge value={analysis.regime} /></div><div className="muted">{analysis.category} · higher-TF vs execution-TF synthesis</div></Card>
             <Card title="AI assessment">
@@ -125,7 +147,7 @@ export default function Analyst(): JSX.Element {
             <Card title="Price">
               <div className="big">{fmtPrice(analysis.price)}</div>
               <div className="muted">RSI {exec?.indicators.rsi != null ? exec.indicators.rsi.toFixed(1) : '—'} · ATR {exec?.indicators.atrPercent?.toFixed(2) ?? '—'}% · Vol {exec?.indicators.volumeState}</div>
-              <div className="muted">OI {analysis.openInterest != null ? analysis.openInterest.toLocaleString() : 'n/a'} · Funding {analysis.fundingRate != null ? `${(analysis.fundingRate * 100).toFixed(4)}%` : 'n/a'}</div>
+              <div className="muted">OI {analysis.openInterest != null ? analysis.openInterest.toLocaleString() : 'N/A'} · Funding {analysis.fundingRate != null ? `${(analysis.fundingRate * 100).toFixed(4)}%` : 'N/A'}</div>
             </Card>
           </div>
 

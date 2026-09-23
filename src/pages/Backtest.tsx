@@ -49,7 +49,7 @@ export default function Backtest(): JSX.Element {
       </div>
       <div className="row" style={{ marginBottom: 12 }}>
         <select value={effective} onChange={(e) => setSymbol(e.target.value)}>
-          {options.map((m) => <option key={m.internalSymbol} value={m.internalSymbol}>{m.displaySymbol} · {m.category}</option>)}
+          {options.map((m) => <option key={m.internalSymbol} value={m.internalSymbol}>{m.displaySymbol} · {m.assetName} · {m.category} · {m.dexLabel}</option>)}
         </select>
         <select value={timeframe} onChange={(e) => setTimeframe(e.target.value)}>
           {TIMEFRAMES.map((t) => <option key={t.id} value={t.id}>{t.id}</option>)}

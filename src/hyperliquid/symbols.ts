@@ -9,7 +9,7 @@
 //     unrecognized main-dex listings are CRYPTO unless known otherwise.
 //     HIP-3 builder dexes mix asset classes, so unknowns there stay UNKNOWN.
 //  5. UNKNOWN fallback.
-import type { AssetCategory, HyperliquidSymbolInfo } from '../types';
+import type { AssetCategory, ClassificationSource, HyperliquidSymbolInfo } from '../types';
 
 // ---- Known sets (display-symbol level, uppercase) ----
 
@@ -109,6 +109,17 @@ export function toUnderlying(internal: string): string {
 export interface Classification {
   category: AssetCategory;
   reason: string;
+  /**
+   * Classification hierarchy (spec §7):
+   *  METADATA — Hyperliquid-provided asset metadata (reserved for future use;
+   *    current info endpoints expose no explicit asset class, so no live
+   *    classification claims METADATA yet)
+   *  DEX      — venue evidence (main dex = crypto venue; dex-qualified tickers)
+   *  PATTERN  — conservative symbol-shape evidence (fiat pairs only)
+   *  MAPPING  — curated reliable ticker mapping
+   *  UNKNOWN  — insufficient evidence; never a false positive
+   */
+  source: ClassificationSource;
 }
 
 /**
@@ -122,54 +133,54 @@ export function classifyMarket(internalSymbol: string, dex = ''): Classification
 
   // 0. Ambiguity guard — never guess on collision-prone names.
   if (AMBIGUOUS.has(upper)) {
-    return { category: 'UNKNOWN', reason: `ambiguous symbol ${display} — not auto-classified` };
+    return { category: 'UNKNOWN', reason: `ambiguous symbol ${display} — not auto-classified`, source: 'UNKNOWN' };
   }
 
   // Seagate (para:STX equity) vs Stacks (bare STX crypto) disambiguation.
   if (upper === 'STX') {
-    if (dex === 'para') return { category: 'STOCK', reason: 'Seagate equity perp (para dex)' };
-    return { category: 'CRYPTO', reason: 'Stacks crypto asset (main dex)' };
+    if (dex === 'para') return { category: 'STOCK', reason: 'Seagate equity perp (para dex)', source: 'DEX' };
+    return { category: 'CRYPTO', reason: 'Stacks crypto asset (main dex)', source: 'DEX' };
   }
 
   // 1. Known crypto (incl. Hyperliquid "k" = 1000-unit memecoin variants: kPEPE → PEPE)
   const kStripped = upper.startsWith('K') && upper.length > 2 ? upper.slice(1) : null;
   if (CRYPTO_MAJORS.has(upper) || CRYPTO_MAJORS.has(baseUpper) || (kStripped && CRYPTO_MAJORS.has(kStripped))) {
-    return { category: 'CRYPTO', reason: `known crypto asset ${display}` };
+    return { category: 'CRYPTO', reason: `known crypto asset ${display}`, source: 'MAPPING' };
   }
   if (STOCK_TICKERS.has(upper) || STOCK_TICKERS.has(baseUpper)) {
-    return { category: 'STOCK', reason: `known equity ticker ${display}` };
+    return { category: 'STOCK', reason: `known equity ticker ${display}`, source: 'MAPPING' };
   }
   if (COMMODITY_SYMBOLS.has(upper)) {
-    return { category: 'COMMODITY', reason: `known commodity ${display}` };
+    return { category: 'COMMODITY', reason: `known commodity ${display}`, source: 'MAPPING' };
   }
   if (INDEX_SYMBOLS.has(upper)) {
-    return { category: 'INDEX', reason: `known index ${display}` };
+    return { category: 'INDEX', reason: `known index ${display}`, source: 'MAPPING' };
   }
   if (OTHER_SYMBOLS.has(upper)) {
-    return { category: 'OTHER', reason: `rates/bond market ${display}` };
+    return { category: 'OTHER', reason: `rates/bond market ${display}`, source: 'MAPPING' };
   }
   if (FOREX_PAIRS.has(upper) || FOREX_SINGLES.has(upper)) {
-    return { category: 'FOREX', reason: `known FX market ${display}` };
+    return { category: 'FOREX', reason: `known FX market ${display}`, source: 'MAPPING' };
   }
 
   // 2. Shape heuristics (conservative, fiat-only pairs)
   if (display.includes('/')) {
     const parts = display.split('/');
     if (parts.length === 2 && parts.every((p) => FOREX_SINGLES.has(p))) {
-      return { category: 'FOREX', reason: `fiat pair shape ${display}` };
+      return { category: 'FOREX', reason: `fiat pair shape ${display}`, source: 'PATTERN' };
     }
   }
   if (/^(EUR|GBP|AUD|NZD|CAD|CHF)[_-]?(USD|JPY|GBP|EUR)$/.test(upper) && upper.length <= 8) {
-    return { category: 'FOREX', reason: `FX pair shape ${display}` };
+    return { category: 'FOREX', reason: `FX pair shape ${display}`, source: 'PATTERN' };
   }
 
   // 3. Venue default: main perp dex is the crypto venue.
   if (dex === '') {
-    return { category: 'CRYPTO', reason: `main Hyperliquid perp listing (${display})` };
+    return { category: 'CRYPTO', reason: `main Hyperliquid perp listing (${display})`, source: 'DEX' };
   }
 
   // 4. HIP-3 unknowns stay UNKNOWN — never falsely classify.
-  return { category: 'UNKNOWN', reason: `unrecognized ${dex ? dex + ' dex ' : ''}market ${internalSymbol}` };
+  return { category: 'UNKNOWN', reason: `unrecognized ${dex ? dex + ' dex ' : ''}market ${internalSymbol}`, source: 'UNKNOWN' };
 }
 
 export function resolveSymbol(internalSymbol: string, dex = ''): HyperliquidSymbolInfo {
@@ -182,4 +193,85 @@ export function resolveSymbol(internalSymbol: string, dex = ''): HyperliquidSymb
     marketType: 'PERP',
     dex,
   };
+}
+
+/** Unique market identity: dex-qualified so identical symbols on different DEXes never collide. */
+export function marketIdFor(internalSymbol: string, dex = ''): string {
+  if (!dex) return internalSymbol;
+  // HIP-3 coin names already embed the dex prefix (e.g. "xyz:TSLA" on dex "xyz").
+  if (internalSymbol.toLowerCase().startsWith(`${dex.toLowerCase()}:`)) return internalSymbol;
+  return `${dex}:${internalSymbol}`;
+}
+
+/** Human DEX label — never invents a name: "MAIN" for the main dex, else the actual dex identifier. */
+export function dexLabelFor(dex: string): string {
+  return dex === '' ? 'MAIN' : dex.toUpperCase();
+}
+
+// ---- Display-name enrichment + search aliases (curated metadata only) ----
+// These NEVER determine existence or category — Hyperliquid discovery does.
+
+const ASSET_NAMES: Record<string, string> = {
+  BTC: 'Bitcoin', ETH: 'Ethereum', SOL: 'Solana',
+  GOLD: 'Gold', SILVER: 'Silver', COPPER: 'Copper',
+  PLATINUM: 'Platinum', PALLADIUM: 'Palladium', PAXG: 'PAX Gold',
+  CL: 'Crude Oil (WTI)', BRENTOIL: 'Brent Crude Oil', BRENT: 'Brent Crude Oil',
+  WTI: 'Crude Oil (WTI)', OIL: 'Crude Oil', NATGAS: 'Natural Gas',
+  ALUMINIUM: 'Aluminium',
+  SP500: 'S&P 500', US500: 'S&P 500', USTECH: 'Nasdaq-100 Tech',
+  SMALL2000: 'Russell 2000', JP225: 'Nikkei 225', KR200: 'KOSPI 200',
+  TOTAL2: 'Crypto Total Ex-BTC', OTHERS: 'Crypto Others Index', BTCD: 'Bitcoin Dominance',
+  EUR: 'Euro', JPY: 'Japanese Yen', GBP: 'British Pound',
+  EURUSD: 'Euro / US Dollar', GBPUSD: 'British Pound / US Dollar',
+  USDJPY: 'US Dollar / Japanese Yen',
+  AAPL: 'Apple', TSLA: 'Tesla', NVDA: 'Nvidia', MSFT: 'Microsoft',
+  AMZN: 'Amazon', GOOGL: 'Alphabet (Google)', META: 'Meta',
+  NFLX: 'Netflix', AMD: 'AMD', INTC: 'Intel', ORCL: 'Oracle',
+  COIN: 'Coinbase', HOOD: 'Robinhood', PLTR: 'Palantir', MSTR: 'MicroStrategy',
+  BABA: 'Alibaba', TSM: 'TSMC', LLY: 'Eli Lilly', COST: 'Costco',
+  MU: 'Micron', SNDK: 'SanDisk', AVGO: 'Broadcom', ASML: 'ASML',
+  ARM: 'Arm', DELL: 'Dell', IBM: 'IBM', QCOM: 'Qualcomm', NOW: 'ServiceNow',
+  AMAT: 'Applied Materials', MRNA: 'Moderna', CVX: 'Chevron',
+  GME: 'GameStop', RIVN: 'Rivian', CRWV: 'CoreWeave', HIMS: 'Hims & Hers',
+  DKNG: 'DraftKings', MRVL: 'Marvell', RKLB: 'Rocket Lab', ZM: 'Zoom',
+  EBAY: 'eBay', BB: 'BlackBerry', WDC: 'Western Digital', NOK: 'Nokia',
+  BE: 'Bloom Energy', MELI: 'MercadoLibre', SOFI: 'SoFi', TTWO: 'Take-Two',
+  CIFR: 'Cipher Mining', IREN: 'Iris Energy', NET: 'Cloudflare',
+  CRWD: 'CrowdStrike', RDDT: 'Reddit', AAOI: 'Applied Optoelectronics',
+  COHR: 'Coherent', GLW: 'Corning', LRCX: 'Lam Research', TER: 'Teradyne',
+  CIEN: 'Ciena', VST: 'Vistra', CRDO: 'Credo', IONQ: 'IonQ', NBIS: 'Nebius',
+  GPRO: 'GoPro', OAI: 'OpenAI (pre-IPO)', ANTH: 'Anthropic (pre-IPO)',
+  SPCX: 'SpaceX (pre-IPO)', SHEIN: 'Shein (pre-IPO)', BMNR: 'BitMine',
+  SOFTBANK: 'SoftBank', HYUNDAI: 'Hyundai', KIOXIA: 'Kioxia', GEV: 'GE Vernova',
+  CRCL: 'Circle',
+  TLT: '20Y Treasury Bond', USBOND: 'US Bond', '10Y': '10Y Treasury Yield',
+};
+
+/** Lowercase search aliases: display symbol → extra terms (e.g. "apple" → AAPL). */
+const ASSET_ALIASES: Record<string, string[]> = {
+  AAPL: ['apple'], TSLA: ['tesla'], NVDA: ['nvidia'], MSFT: ['microsoft'],
+  AMZN: ['amazon'], GOOGL: ['google', 'alphabet'], META: ['facebook'],
+  GOLD: ['gold', 'xau'], SILVER: ['silver', 'xag'], PAXG: ['gold'],
+  CL: ['oil', 'crude', 'wti'], BRENTOIL: ['oil', 'brent', 'crude'],
+  NATGAS: ['gas', 'natural gas'], COPPER: ['copper'],
+  PLATINUM: ['platinum'], PALLADIUM: ['palladium'],
+  SP500: ['sp500', 's&p', 's&p 500', 'spy', 'spx'],
+  US500: ['sp500', 's&p', 's&p 500', 'spy'],
+  USTECH: ['nasdaq', 'nasdaq 100', 'qqq'],
+  SMALL2000: ['russell', 'russell 2000', 'iwm'],
+  JP225: ['nikkei', 'nikkei 225'], KR200: ['kospi'],
+  EURUSD: ['eurusd', 'eur/usd', 'euro dollar', 'fiber'],
+  GBPUSD: ['gbpusd', 'cable'], USDJPY: ['usdjpy'],
+  EUR: ['euro'], JPY: ['yen'], GBP: ['pound', 'sterling'],
+  BTC: ['bitcoin'], ETH: ['ethereum'], SOL: ['solana'],
+  NFLX: ['netflix'], COIN: ['coinbase'], HOOD: ['robinhood'],
+  PLTR: ['palantir'], BABA: ['alibaba'],
+};
+
+export function assetNameFor(displaySymbol: string): string {
+  return ASSET_NAMES[displaySymbol.toUpperCase()] ?? displaySymbol;
+}
+
+export function aliasesFor(displaySymbol: string): string[] {
+  return ASSET_ALIASES[displaySymbol.toUpperCase()] ?? [];
 }

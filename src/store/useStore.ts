@@ -2,14 +2,19 @@ import { create } from 'zustand';
 import type { AssetCategory, FinalTradeAnalysis, HyperliquidMarket, TradingSignal } from '../types';
 import type { SymbolAnalysis } from '../services/marketService';
 import type { CategoryFilter } from '../config/app';
-import { resolveDefaultCategory } from '../config/app';
+import { APP_CONFIG, resolveDefaultCategory } from '../config/app';
+import { aliasesFor } from '../hyperliquid/symbols';
 
 interface AppState {
   markets: HyperliquidMarket[];
   marketsLoading: boolean;
   marketsError: string | null;
   marketsUpdatedAt: number | null;
+  /** marketIds seen in the latest discovery that were never seen before */
+  newMarketIds: string[];
   category: CategoryFilter;
+  /** DEX filter: 'ALL' or the actual dex identifier ('' = MAIN) */
+  dexFilter: string;
   search: string;
   favorites: string[]; // internal symbols
   executionTimeframe: string;
@@ -30,6 +35,7 @@ interface AppState {
   setMarketsLoading: (v: boolean) => void;
   setMarketsError: (e: string | null) => void;
   setCategory: (c: CategoryFilter) => void;
+  setDexFilter: (d: string) => void;
   setSearch: (s: string) => void;
   toggleFavorite: (internal: string) => void;
   setAnalysis: (internal: string, a: SymbolAnalysis) => void;
@@ -48,6 +54,18 @@ interface AppState {
 const HISTORY_KEY = 'sunil-hl-signals-v1';
 const FAV_KEY = 'sunil-hl-favorites-v1';
 const PREF_KEY = 'sunil-hl-prefs-v1';
+const KNOWN_MARKETS_KEY = 'sunil-hl-known-markets-v1';
+
+function loadKnownMarketIds(): string[] {
+  try {
+    const raw = localStorage.getItem(KNOWN_MARKETS_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw) as string[];
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
 
 function loadHistory(): TradingSignal[] {
   try {
@@ -71,11 +89,11 @@ function loadFavorites(): string[] {
   }
 }
 
-function loadPrefs(): { category?: CategoryFilter; executionTimeframe?: string } {
+function loadPrefs(): { category?: CategoryFilter; executionTimeframe?: string; dexFilter?: string } {
   try {
     const raw = localStorage.getItem(PREF_KEY);
     if (!raw) return {};
-    return JSON.parse(raw) as { category?: CategoryFilter };
+    return JSON.parse(raw) as { category?: CategoryFilter; executionTimeframe?: string; dexFilter?: string };
   } catch {
     return {};
   }
@@ -86,7 +104,9 @@ export const useStore = create<AppState>((set, get) => ({
   marketsLoading: false,
   marketsError: null,
   marketsUpdatedAt: null,
+  newMarketIds: [],
   category: loadPrefs().category ?? resolveDefaultCategory(),
+  dexFilter: loadPrefs().dexFilter ?? 'ALL',
   search: '',
   favorites: typeof localStorage !== 'undefined' ? loadFavorites() : [],
   executionTimeframe: loadPrefs().executionTimeframe ?? '15m',
@@ -110,7 +130,24 @@ export const useStore = create<AppState>((set, get) => ({
       const stock = markets.find((m) => m.category === 'STOCK');
       selectedSymbol = (stock ?? markets[0])?.internalSymbol ?? '';
     }
-    set({ markets, marketsUpdatedAt: Date.now(), selectedSymbol });
+    // NEW-market detection: ids never seen in any previous discovery.
+    // First-ever discovery establishes the baseline (nothing flagged NEW).
+    let newMarketIds: string[] = st.newMarketIds;
+    try {
+      const known = loadKnownMarketIds();
+      if (known.length === 0) {
+        try { localStorage.setItem(KNOWN_MARKETS_KEY, JSON.stringify(markets.map((m) => m.marketId))); } catch { /* ignore */ }
+        newMarketIds = [];
+      } else {
+        const knownSet = new Set(known);
+        newMarketIds = markets.filter((m) => !knownSet.has(m.marketId)).map((m) => m.marketId);
+        try { localStorage.setItem(KNOWN_MARKETS_KEY, JSON.stringify(markets.map((m) => m.marketId))); } catch { /* ignore */ }
+      }
+    } catch { /* ignore — never break discovery */ }
+    // Drop DEX filter if the dex vanished from the universe
+    let dexFilter = st.dexFilter;
+    if (dexFilter !== 'ALL' && !markets.some((m) => m.dex === dexFilter)) dexFilter = 'ALL';
+    set({ markets, marketsUpdatedAt: Date.now(), selectedSymbol, newMarketIds, dexFilter });
   },
   setMarketsLoading: (marketsLoading) => set({ marketsLoading }),
   setMarketsError: (marketsError) => set({ marketsError }),
@@ -119,6 +156,13 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       const p = loadPrefs();
       localStorage.setItem(PREF_KEY, JSON.stringify({ ...p, category }));
+    } catch { /* ignore */ }
+  },
+  setDexFilter: (dexFilter) => {
+    set({ dexFilter });
+    try {
+      const p = loadPrefs();
+      localStorage.setItem(PREF_KEY, JSON.stringify({ ...p, dexFilter }));
     } catch { /* ignore */ }
   },
   setSearch: (search) => set({ search }),
@@ -158,15 +202,37 @@ export const useStore = create<AppState>((set, get) => ({
   marketCategoryOf: (internal) => get().markets.find((m) => m.internalSymbol === internal)?.category ?? 'UNKNOWN',
 }));
 
-export function filteredMarkets(state: Pick<AppState, 'markets' | 'category' | 'search'>): HyperliquidMarket[] {
+export function filteredMarkets(
+  state: Pick<AppState, 'markets' | 'category' | 'search'> & { dexFilter?: string },
+): HyperliquidMarket[] {
   const q = state.search.trim().toLowerCase();
+  const dexFilter = state.dexFilter ?? 'ALL';
   return state.markets.filter((m) => {
     if (state.category !== 'ALL' && m.category !== state.category) return false;
+    if (dexFilter !== 'ALL' && m.dex !== dexFilter) return false;
     if (!q) return true;
-    return (
+    // Search across the full market identity: internal, display, asset name,
+    // underlying, aliases, market id, and DEX.
+    if (
       m.displaySymbol.toLowerCase().includes(q) ||
       m.internalSymbol.toLowerCase().includes(q) ||
-      m.underlying.toLowerCase().includes(q)
-    );
+      m.marketId.toLowerCase().includes(q) ||
+      m.assetName.toLowerCase().includes(q) ||
+      m.underlying.toLowerCase().includes(q) ||
+      m.dex.toLowerCase().includes(q) ||
+      m.dexLabel.toLowerCase().includes(q)
+    ) return true;
+    return aliasesFor(m.displaySymbol).some((a) => a.includes(q) || q.includes(a));
   });
+}
+
+/** Distinct DEX identifiers present in the universe ('' = MAIN), sorted with MAIN first. */
+export function availableDexes(markets: HyperliquidMarket[]): string[] {
+  const set = new Set(markets.map((m) => m.dex));
+  return [...set].sort((a, b) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)));
+}
+
+/** Stale-data protection: discovery older than the threshold must not be presented as live. */
+export function isMarketStale(m: HyperliquidMarket, now = Date.now()): boolean {
+  return now - m.updatedAt > APP_CONFIG.marketStaleMs;
 }

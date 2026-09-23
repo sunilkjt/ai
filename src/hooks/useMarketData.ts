@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { APP_CONFIG } from '../config/app';
 import { analyzeSymbol } from '../services/marketService';
 import { findMarket, getDiscoveredMarkets } from '../providers/market-data/hyperliquid';
-import { useStore } from '../store/useStore';
+import { useStore, filteredMarkets } from '../store/useStore';
 import { getAIProvider } from '../providers/ai/factory';
 import { evaluateSignalLifecycle } from '../core/signals';
 import { log } from '../utils/logger';
@@ -48,13 +48,9 @@ export function useMarketPolling(withAI = false, limit = 12): void {
   const poll = useCallback(async () => {
     const store = useStore.getState();
     if (store.markets.length === 0) return;
-    const { category, search, favorites, selectedSymbol } = store;
-    const q = search.trim().toLowerCase();
-    let pool = store.markets.filter((m) => {
-      if (category !== 'ALL' && m.category !== category) return false;
-      if (q && !(m.displaySymbol.toLowerCase().includes(q) || m.internalSymbol.toLowerCase().includes(q))) return false;
-      return true;
-    });
+    const { category, dexFilter, search, favorites, selectedSymbol } = store;
+    // Poll the visible universe (category + DEX + search), honoring cache/refresh limits.
+    let pool = filteredMarkets({ markets: store.markets, category, search, dexFilter });
     // Always include selected + favorites
     const must = new Set<string>([selectedSymbol, ...favorites].filter(Boolean));
     for (const f of must) {

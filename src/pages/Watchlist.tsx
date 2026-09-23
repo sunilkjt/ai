@@ -26,15 +26,16 @@ export default function Watchlist(): JSX.Element {
         {rows.length === 0 && <div className="muted">No favorites yet. Example: ⭐ GOLD, ⭐ NASDAQ, ⭐ AAPL, ⭐ TSLA, ⭐ EUR/USD, ⭐ BTC — if listed on Hyperliquid.</div>}
         {rows.length > 0 && (
           <div className="table-wrap"><table>
-            <thead><tr><th>★</th><th>Asset</th><th>Category</th><th>Price</th><th>24H %</th><th>OI</th><th>Funding</th><th>Regime</th><th>AI</th></tr></thead>
+            <thead><tr><th>★</th><th>Asset</th><th>Category</th><th>DEX</th><th>Price</th><th>24H %</th><th>OI</th><th>Funding</th><th>Regime</th><th>AI</th></tr></thead>
             <tbody>
               {rows.map((m) => {
                 const a = analyses[m.internalSymbol];
                 return (
                   <tr key={m.internalSymbol}>
                     <td><button className="btn secondary" style={{ padding: '2px 8px' }} onClick={() => toggleFavorite(m.internalSymbol)}>★</button></td>
-                    <td><Link to="/analyst" onClick={() => selectSymbol(m.internalSymbol)}><strong>{m.displaySymbol}</strong></Link></td>
+                    <td><Link to="/analyst" onClick={() => selectSymbol(m.internalSymbol)}><strong>{m.displaySymbol}</strong></Link> <span className="muted">{m.assetName !== m.displaySymbol ? m.assetName : ''}</span></td>
                     <td><CategoryBadge value={m.category} /></td>
+                    <td><span className="badge">{m.dexLabel}</span></td>
                     <td>{fmtPrice(a?.price ?? m.price)}</td>
                     <td className={(a?.change24h ?? m.priceChangePercent24h ?? 0) >= 0 ? 'positive' : 'negative'}>{fmtPct(a?.change24h ?? m.priceChangePercent24h)}</td>
                     <td>{a?.openInterest != null ? a.openInterest.toLocaleString() : m.ctx?.openInterest ?? '—'}</td>

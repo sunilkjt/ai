@@ -23,8 +23,9 @@ export async function getDiscoveredMarkets(force = false): Promise<HyperliquidMa
 }
 
 export function findMarket(markets: HyperliquidMarket[], symbol: string): HyperliquidMarket | undefined {
-  // symbol may be internal ("xyz:TSLA") or display ("TSLA")
+  // symbol may be a marketId, internal ("xyz:TSLA") or display ("TSLA")
   return (
+    markets.find((m) => m.marketId === symbol) ??
     markets.find((m) => m.internalSymbol === symbol) ??
     markets.find((m) => m.displaySymbol === symbol)
   );

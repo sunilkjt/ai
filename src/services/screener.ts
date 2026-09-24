@@ -5,7 +5,7 @@
 //   STAGE 3 — AI review on the TOP slice only (configurable budget)
 // Demo markets are excluded from live results. No AI call per tick.
 import type {
-  AIProvider, AgentRun, AssetCategory, Candle, HyperliquidMarket, ScreenResult, ScreenerStats,
+  AIProvider, AgentRun, Candle, HyperliquidMarket, ScreenResult, ScreenerStats,
 } from '../types';
 import { CATEGORY_ORDER } from '../types';
 import { APP_CONFIG } from '../config/app';
@@ -30,89 +30,183 @@ export function oiRising(marketId: string, currentOi: number | null): boolean | 
 
 export interface FastCandidate {
   market: HyperliquidMarket;
-  liteScore: number;
+  /** Stage-1 directional read from 4H/1H/15M trend + momentum */
+  bias: 'LONG' | 'SHORT' | 'NEUTRAL';
+  /** Priority score — ranks shortlist order, never profit odds */
+  priority: number;
   reasons: string[];
+}
+
+export interface Stage0Report {
+  discovered: number;
+  passed: number;
+  rejected: { reason: string; count: number }[];
 }
 
 const MIN_NOTIONAL = 25000;
 
-function stage0(markets: HyperliquidMarket[]): HyperliquidMarket[] {
-  return markets.filter((m) => {
-    if (m.isDelisted) return false;
-    const vol = m.ctx?.dayNtlVlm;
-    if (vol == null) return true; // unknown liquidity passes stage 0, scored later
-    return vol >= MIN_NOTIONAL;
+/** Stage 0 — data quality + liquidity validation with counted reasons. */
+export function stage0(markets: HyperliquidMarket[]): { passed: HyperliquidMarket[]; report: Stage0Report } {
+  const rejected = new Map<string, number>();
+  const reject = (reason: string): void => {
+    rejected.set(reason, (rejected.get(reason) ?? 0) + 1);
+  };
+  const passed = markets.filter((m) => {
+    if (m.isDelisted) {
+      reject('delisted');
+      return false;
+    }
+    if (!m.ctx) {
+      reject('no derivatives context');
+      return false;
+    }
+    if (m.price == null || !Number.isFinite(m.price) || m.price <= 0) {
+      reject('no sane price');
+      return false;
+    }
+    const vol = m.ctx.dayNtlVlm;
+    if (vol != null && vol < MIN_NOTIONAL) {
+      reject(`24h notional < $${MIN_NOTIONAL.toLocaleString()}`);
+      return false;
+    }
+    return true;
   });
+  return {
+    passed,
+    report: {
+      discovered: markets.length,
+      passed: passed.length,
+      rejected: [...rejected.entries()].map(([reason, count]) => ({ reason, count })),
+    },
+  };
 }
 
-function categoryBudget(perCategory: number): Map<AssetCategory, number> {
-  const m = new Map<AssetCategory, number>();
-  for (const c of CATEGORY_ORDER) m.set(c, perCategory);
-  return m;
-}
-
+/**
+ * Stage 1 — cheap fast scan over the COMPLETE stage-0 universe (no per-category caps).
+ * Per market: price, volume, volatility, funding, open interest, momentum,
+ * 4H/1H/15M trend, basic structure → bias LONG/SHORT/NEUTRAL + priority score.
+ * No AI is called here — ever.
+ */
 export async function fastScan(
   markets: HyperliquidMarket[],
-  opts: { perCategory?: number; maxCandidates?: number } = {},
-): Promise<FastCandidate[]> {
-  const pool = stage0(markets);
-  const budget = categoryBudget(opts.perCategory ?? 10);
+  opts: { maxCandidates?: number; onProgress?: (done: number, total: number) => void } = {},
+): Promise<{ candidates: FastCandidate[]; stage0: Stage0Report; scanned: number }> {
+  const { passed: pool, report } = stage0(markets);
   const out: FastCandidate[] = [];
-  // Priority order: STOCKS → COMMODITIES → INDICES → FOREX → CRYPTO → rest
+  let scanned = 0;
+  // Fetch order follows category priority; every passing market is analyzed.
   const ordered = [...pool].sort(
     (a, b) => CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category),
   );
   for (const m of ordered) {
-    const left = budget.get(m.category) ?? 0;
-    if (left <= 0) continue;
-    budget.set(m.category, left - 1);
     try {
-      const [h4, m15] = await Promise.all([
-        fetchCandlesCached(m.internalSymbol, '4H', 120).catch(() => null),
-        fetchCandlesCached(m.internalSymbol, '15m', 120).catch(() => null),
+      const [h4, h1, m15] = await Promise.all([
+        fetchCandlesCached(m.internalSymbol, '4H', 120, m.marketId).catch(() => null),
+        fetchCandlesCached(m.internalSymbol, '1H', 120, m.marketId).catch(() => null),
+        fetchCandlesCached(m.internalSymbol, '15m', 120, m.marketId).catch(() => null),
       ]);
-      if (!h4 || !m15 || h4.demo || m15.demo) continue;
-      if (h4.candles.length < 60 || m15.candles.length < 60) continue;
+      scanned += 1;
+      opts.onProgress?.(scanned, ordered.length);
+      if (!h4 || !h1 || !m15 || h4.demo || h1.demo || m15.demo) continue;
+      if (h4.candles.length < 60 || h1.candles.length < 60 || m15.candles.length < 60) continue;
       const a4 = analyzeTimeframe('4H', h4.candles);
+      const a1 = analyzeTimeframe('1H', h1.candles);
       const a15 = analyzeTimeframe('15m', m15.candles);
       const reasons: string[] = [];
-      let lite = 0;
-      if (a4.bias !== 'NEUTRAL' && a4.bias === a15.bias) {
-        lite += 40;
-        reasons.push(`4H+15M aligned ${a4.bias}`);
-      } else if (a4.bias !== 'NEUTRAL' || a15.bias !== 'NEUTRAL') {
-        lite += 15;
+      let priority = 0;
+
+      // Trend votes across 4H / 1H / 15M
+      const bullVotes = [a4.bias, a1.bias, a15.bias].filter((b) => b === 'BULLISH').length;
+      const bearVotes = [a4.bias, a1.bias, a15.bias].filter((b) => b === 'BEARISH').length;
+      const bias: FastCandidate['bias'] =
+        bullVotes >= 2 && bearVotes === 0 ? 'LONG'
+        : bearVotes >= 2 && bullVotes === 0 ? 'SHORT'
+        : 'NEUTRAL';
+      if (bullVotes === 3 || bearVotes === 3) {
+        priority += 50;
+        reasons.push(`4H+1H+15M aligned ${bullVotes === 3 ? 'BULLISH' : 'BEARISH'}`);
+      } else if (bias !== 'NEUTRAL') {
+        priority += 30;
+        reasons.push(`2-TF ${bias === 'LONG' ? 'bullish' : 'bearish'} alignment`);
+      } else if (bullVotes === 1 || bearVotes === 1) {
+        priority += 10;
         reasons.push('single-TF bias only');
       }
-      const chg = Math.abs(m.priceChangePercent24h ?? 0);
-      if (chg > 30) {
-        lite -= 20;
-        reasons.push('extreme 24H move — possible bad print or blow-off');
+
+      // Momentum (RSI sweet band, not stretched)
+      const rsi = a15.indicators.rsi;
+      if (rsi != null) {
+        if (bias === 'LONG' && rsi >= 55 && rsi < 70) {
+          priority += 10;
+          reasons.push(`15M momentum supportive (RSI ${rsi.toFixed(0)})`);
+        } else if (bias === 'SHORT' && rsi > 30 && rsi <= 45) {
+          priority += 10;
+          reasons.push(`15M momentum supportive (RSI ${rsi.toFixed(0)})`);
+        } else if ((bias === 'LONG' && rsi >= 70) || (bias === 'SHORT' && rsi <= 30)) {
+          priority -= 10;
+          reasons.push(`15M momentum stretched (RSI ${rsi.toFixed(0)}) — late-entry risk`);
+        }
       }
+
+      // Volatility sanity (ATR%)
       const atrp = a15.indicators.atrPercent ?? 0;
       if (atrp > 0 && atrp < 8) {
-        lite += 10;
+        priority += 5;
       } else if (atrp >= 8) {
-        lite -= 10;
+        priority -= 10;
         reasons.push('volatility extreme');
       }
+
+      // Basic structure: BOS / sweep / displacement on 15M
       if (a15.structure.bos) {
-        lite += 15;
+        priority += 10;
         reasons.push(`${a15.structure.bos} BOS on 15M`);
       }
       if (a15.smc.swept) {
-        lite += 15;
+        priority += 10;
         reasons.push(`liquidity sweep ${a15.smc.liquiditySweep}`);
       }
+      if (a15.smc.displacement) {
+        priority += 5;
+        reasons.push(`${a15.smc.displacement} displacement`);
+      }
+
+      // Derivatives context: funding extremes penalize, OI presence informs
+      const f = m.ctx?.funding;
+      if (f != null && Math.abs(f) > 0.001) {
+        priority -= 10;
+        reasons.push(`funding extreme (${(f * 100).toFixed(3)}%) — crowded positioning risk`);
+      }
+      if (m.ctx?.openInterest != null && m.ctx.openInterest > 0) {
+        priority += 5;
+        reasons.push(`OI ${m.ctx.openInterest.toLocaleString()}`);
+      }
+
+      // Volume tiers (24h notional)
       const vol = m.ctx?.dayNtlVlm ?? 0;
-      if (vol >= 1000000) lite += 10;
-      out.push({ market: m, liteScore: lite, reasons });
+      if (vol >= 1000000) {
+        priority += 10;
+        reasons.push('high 24h liquidity');
+      } else if (vol >= 100000) {
+        priority += 5;
+      }
+
+      // 24h move sanity
+      const chg = Math.abs(m.priceChangePercent24h ?? 0);
+      if (chg > 30) {
+        priority -= 20;
+        reasons.push('extreme 24H move — possible bad print or blow-off');
+      }
+
+      out.push({ market: m, bias, priority, reasons });
     } catch {
+      scanned += 1;
+      opts.onProgress?.(scanned, ordered.length);
       continue; // one market failing never kills the scan
     }
   }
-  out.sort((a, b) => b.liteScore - a.liteScore);
-  return out.slice(0, opts.maxCandidates ?? APP_CONFIG.screenerMaxCandidates);
+  out.sort((a, b) => b.priority - a.priority);
+  return { candidates: out.slice(0, opts.maxCandidates ?? APP_CONFIG.screenerMaxCandidates), stage0: report, scanned };
 }
 
 export async function scanFull(
@@ -146,8 +240,8 @@ export async function scanFull(
       continue;
     }
   }
-  // Rank deterministically, AI-review only the top slice
-  analyzed.sort((x, y) => y.analysis.signal.confluenceScore - x.analysis.signal.confluenceScore);
+  // Rank deterministically (stage-1 priority first), AI-review only the top slice
+  analyzed.sort((x, y) => (y.candidate.priority - x.candidate.priority) || (y.analysis.signal.confluenceScore - x.analysis.signal.confluenceScore));
   let aiReviewed = 0;
   for (let i = 0; i < analyzed.length; i++) {
     const { candidate, analysis } = analyzed[i];
@@ -231,23 +325,28 @@ export async function scanFull(
 
 export async function scanUniverse(
   markets: HyperliquidMarket[],
-  opts: Parameters<typeof scanFull>[1] & { perCategory?: number; maxCandidates?: number } = {},
+  opts: Parameters<typeof scanFull>[1] & { maxCandidates?: number; onProgress?: (done: number, total: number) => void } = {},
 ): Promise<{ results: ScreenResult[]; stats: ScreenerStats; ledger: AgentRun[] }> {
   const startedAt = Date.now();
   const fast = await fastScan(markets, opts);
-  const { results, aiReviewed, ledger } = await scanFull(fast, { ...opts, markets });
+  const { results, aiReviewed, ledger } = await scanFull(fast.candidates, { ...opts, markets });
   const finishedAt = Date.now();
   const longCount = results.filter((r) => r.aiDirection === 'LONG' && (r.status === 'CONFIRMED' || r.status === 'CONDITIONAL')).length;
   const shortCount = results.filter((r) => r.aiDirection === 'SHORT' && (r.status === 'CONFIRMED' || r.status === 'CONDITIONAL')).length;
   const waitCount = results.filter((r) => r.status === 'WATCHING' || r.aiDirection === 'WAIT').length;
   const rejected = results.filter((r) => r.status === 'REJECTED' || r.status === 'INVALIDATED').length;
+  // Honest accounting: discovered → stage-0 → stage-1 scanned → shortlisted → AI reviewed.
+  const stage0Rejected = fast.stage0.rejected.reduce((a, r) => a + r.count, 0);
   return {
     results,
     ledger,
     stats: {
-      scanned: markets.length,
+      discovered: fast.stage0.discovered,
+      scanned: fast.scanned,
+      stage0Rejected,
+      stage0Reasons: fast.stage0.rejected,
       skippedDemo: 0,
-      fastCandidates: fast.length,
+      fastCandidates: fast.candidates.length,
       aiReviewed,
       longCount, shortCount, waitCount, rejected,
       startedAt, finishedAt, durationMs: finishedAt - startedAt,

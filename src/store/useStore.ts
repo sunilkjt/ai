@@ -57,10 +57,11 @@ interface AppState {
   screenResults: ScreenResult[];
   screenStats: ScreenerStats | null;
   scanning: boolean;
+  scanProgress: { done: number; total: number } | null;
   lastScanAt: number | null;
   autoScanMinutes: number;
   lastAgentLedger: AgentRun[];
-  setScreener: (r: Partial<Pick<AppState, 'screenResults' | 'screenStats' | 'scanning' | 'lastScanAt' | 'autoScanMinutes' | 'lastAgentLedger'>>) => void;
+  setScreener: (r: Partial<Pick<AppState, 'screenResults' | 'screenStats' | 'scanning' | 'scanProgress' | 'lastScanAt' | 'autoScanMinutes' | 'lastAgentLedger'>>) => void;
   setExecutionTimeframe: (tf: string) => void;
   setRisk: (r: Partial<Pick<AppState, 'riskPercent' | 'leverage' | 'accountBalance' | 'aiEnabled'>>) => void;
   marketCategoryOf: (marketId: string) => AssetCategory;
@@ -246,6 +247,7 @@ export const useStore = create<AppState>((set, get) => ({
   screenResults: [],
   screenStats: null,
   scanning: false,
+  scanProgress: null,
   lastScanAt: null,
   autoScanMinutes: 0,
   lastAgentLedger: [],

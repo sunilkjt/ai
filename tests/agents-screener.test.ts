@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { TOOL_NAMES, createTools, validateAISignal } from '../src/agents/tools';
+import { stage0 } from '../src/services/screener';
+import type { HyperliquidMarket } from '../src/types';
 import { qualityGate } from '../src/agents/AgentOrchestrator';
 import { setupQualityFromScores, QUALITY_WEIGHTS, scoreComponents } from '../src/core/quality';
 import { detectTraps } from '../src/core/traps';
@@ -137,8 +139,36 @@ describe('quality gate', () => {
   });
 });
 
-describe('signal lifecycle transitions', () => {
-  it('records every transition with reason', () => {
+describe('stage 0 validation', () => {
+  const base: HyperliquidMarket = {
+    marketId: 'main:T', internalSymbol: 'T', displaySymbol: 'T', assetName: 'T',
+    underlying: 'T', category: 'CRYPTO', classificationSource: 'DEX', dex: '',
+    dexLabel: 'MAIN', maxLeverage: 10, szDecimals: 3, onlyIsolated: false,
+    isDelisted: false, classificationReason: 't', discoveredAt: Date.now(),
+    updatedAt: Date.now(), ctx: null, price: 100, priceChangePercent24h: 1,
+  };
+  const withCtx = (over: Partial<HyperliquidMarket>): HyperliquidMarket => ({
+    ...base,
+    ctx: { markPx: 100, oraclePx: 100, midPx: 100, funding: 0, openInterest: 10, dayNtlVlm: 100000, prevDayPx: 99, premium: 0 },
+    ...over,
+  });
+  it('rejects delisted / missing ctx / bad price / thin liquidity with counted reasons', () => {
+    const markets = [
+      withCtx({ marketId: 'main:OK' }),
+      withCtx({ marketId: 'main:DEL', isDelisted: true }),
+      { ...base, marketId: 'main:NOCTX' },
+      withCtx({ marketId: 'main:NOPRICE', price: null, ctx: { markPx: null, oraclePx: null, midPx: null, funding: null, openInterest: null, dayNtlVlm: 100000, prevDayPx: null, premium: null } }),
+      withCtx({ marketId: 'main:THIN', ctx: { markPx: 1, oraclePx: 1, midPx: 1, funding: 0, openInterest: 1, dayNtlVlm: 100, prevDayPx: 1, premium: 0 } }),
+    ];
+    const { passed, report } = stage0(markets);
+    expect(report.discovered).toBe(5);
+    expect(passed.map((m) => m.marketId)).toEqual(['main:OK']);
+    expect(report.rejected.reduce((a, r) => a + r.count, 0)).toBe(4);
+    expect(report.rejected.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('signal lifecycle transitions', () => {  it('records every transition with reason', () => {
     const cs = trendCandles();
     const tf = analyzeTimeframe('15m', cs);
     const conf = computeConfluence([tf], EMPTY_DERIV);

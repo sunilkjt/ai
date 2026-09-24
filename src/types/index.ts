@@ -492,7 +492,13 @@ export interface ScreenResult {
 }
 
 export interface ScreenerStats {
+  /** Markets discovered on Hyperliquid at scan time */
+  discovered: number;
+  /** Markets that passed stage-0 validation and entered the stage-1 scan */
   scanned: number;
+  /** Rejected at stage 0 (data quality / liquidity), with counted reasons */
+  stage0Rejected: number;
+  stage0Reasons: { reason: string; count: number }[];
   skippedDemo: number;
   fastCandidates: number;
   aiReviewed: number;

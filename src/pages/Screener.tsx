@@ -83,6 +83,7 @@ export default function Screener(): JSX.Element {
   const screenStats = useStore((s) => s.screenStats);
   const scanning = useStore((s) => s.scanning);
   const setScreener = useStore((s) => s.setScreener);
+  const scanProgress = useStore((s) => s.scanProgress);
   const lastScanAt = useStore((s) => s.lastScanAt);
   const autoScanMinutes = useStore((s) => s.autoScanMinutes);
   const newMarketIds = useStore((s) => s.newMarketIds);
@@ -103,7 +104,7 @@ export default function Screener(): JSX.Element {
       return;
     }
     setError('');
-    setScreener({ scanning: true });
+    setScreener({ scanning: true, scanProgress: { done: 0, total: markets.length } });
     log('SCREEN', `Scan started over ${markets.length} markets`);
     try {
       const st = useStore.getState();
@@ -112,11 +113,13 @@ export default function Screener(): JSX.Element {
         aiEnabled,
         riskOpts: { accountBalance: st.accountBalance, riskPercent: st.riskPercent, leverage: st.leverage },
         memoryOf: (symbol) => useStore.getState().memory[symbol] ?? [],
+        onProgress: (done, total) => useStore.getState().setScreener({ scanProgress: { done, total } }),
       });
       setScreener({
         screenResults: results,
         screenStats: stats,
         scanning: false,
+        scanProgress: null,
         lastScanAt: Date.now(),
         lastAgentLedger: ledger,
       });
@@ -170,8 +173,10 @@ export default function Screener(): JSX.Element {
       {screenStats && (
         <Card title={`Last scan ${timeAgo(screenStats.finishedAt)} · ${(screenStats.durationMs / 1000).toFixed(1)}s`}>
           <div className="row">
-            <span>Markets scanned: <strong>{screenStats.scanned}</strong></span>
-            <span>Fast candidates: <strong>{screenStats.fastCandidates}</strong></span>
+            <span>Discovered: <strong>{screenStats.discovered}</strong></span>
+            <span>Scanned: <strong>{screenStats.scanned}</strong></span>
+            <span>Stage-0 rejected: <strong>{screenStats.stage0Rejected}</strong></span>
+            <span>Shortlisted: <strong>{screenStats.fastCandidates}</strong></span>
             <span>AI reviewed: <strong>{screenStats.aiReviewed}</strong></span>
             <span>LONG: <strong className="positive">{screenStats.longCount}</strong></span>
             <span>SHORT: <strong className="negative">{screenStats.shortCount}</strong></span>
@@ -205,6 +210,7 @@ export default function Screener(): JSX.Element {
           </div>
         )}
         {scanning && screenResults.length === 0 && <div className="banner">Scanning the Hyperliquid universe… (fast deterministic stage first, AI only on the top slice)</div>}
+        {scanning && scanProgress && <div className="banner">Stage 1 scanning {scanProgress.done}/{scanProgress.total} markets…</div>}
         {rows.map((r) => <SignalCard key={r.marketId} r={r} />)}
       </div>
     </div>

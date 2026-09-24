@@ -21,7 +21,7 @@ export default function Backtest(): JSX.Element {
   const [error, setError] = useState('');
 
   const options = useMemo(() => filteredMarkets({ markets, category, search: '' }).slice(0, 200), [markets, category]);
-  const effective = symbol && options.some((m) => m.internalSymbol === symbol) ? symbol : (options[0]?.internalSymbol ?? '');
+  const effective = symbol && options.some((m) => m.marketId === symbol) ? symbol : (options[0]?.marketId ?? '');
 
   async function run(): Promise<void> {
     if (!effective) return;
@@ -49,7 +49,7 @@ export default function Backtest(): JSX.Element {
       </div>
       <div className="row" style={{ marginBottom: 12 }}>
         <select value={effective} onChange={(e) => setSymbol(e.target.value)}>
-          {options.map((m) => <option key={m.internalSymbol} value={m.internalSymbol}>{m.displaySymbol} · {m.assetName} · {m.category} · {m.dexLabel}</option>)}
+          {options.map((m) => <option key={m.marketId} value={m.marketId}>{m.displaySymbol} · {m.assetName} · {m.category} · {m.dexLabel}</option>)}
         </select>
         <select value={timeframe} onChange={(e) => setTimeframe(e.target.value)}>
           {TIMEFRAMES.map((t) => <option key={t.id} value={t.id}>{t.id}</option>)}

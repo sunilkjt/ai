@@ -9,6 +9,7 @@ import type {
   Ticker,
 } from '../../types';
 import { discoverMarkets } from '../../hyperliquid/markets';
+import { parseMarketId } from '../../hyperliquid/symbols';
 import { fetchHyperliquidCandles } from '../../hyperliquid/candles';
 import { derivativesFromMarket } from '../../hyperliquid/derivatives';
 
@@ -23,12 +24,22 @@ export async function getDiscoveredMarkets(force = false): Promise<HyperliquidMa
 }
 
 export function findMarket(markets: HyperliquidMarket[], symbol: string): HyperliquidMarket | undefined {
-  // symbol may be a marketId, internal ("xyz:TSLA") or display ("TSLA")
-  return (
+  // Resolution order: canonical marketId ("main:BTC", "xyz:TSLA") →
+  // internal ("BTC", "xyz:TSLA") → display ("TSLA").
+  const direct =
     markets.find((m) => m.marketId === symbol) ??
-    markets.find((m) => m.internalSymbol === symbol) ??
-    markets.find((m) => m.displaySymbol === symbol)
-  );
+    markets.find((m) => m.internalSymbol === symbol);
+  if (direct) return direct;
+  const parsed = parseMarketId(symbol);
+  if (parsed) {
+    const hit = markets.find(
+      (m) =>
+        m.dex.toLowerCase() === parsed.dex.toLowerCase() &&
+        (m.displaySymbol === parsed.symbol || m.internalSymbol.toUpperCase() === parsed.symbol),
+    );
+    if (hit) return hit;
+  }
+  return markets.find((m) => m.displaySymbol === symbol);
 }
 
 export class HyperliquidProvider implements MarketDataProvider {

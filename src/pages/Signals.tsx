@@ -28,12 +28,12 @@ export default function Signals(): JSX.Element {
   return (
     <div>
       <div className="topbar">
-        <div><h1>Signals</h1><p>Deterministic signals with lifecycle: NEW · ACTIVE · TP1 HIT · TP2 HIT · SL HIT · INVALIDATED · EXPIRED.</p></div>
+        <div><h1>Signals</h1><p>Live tracked signals with recorded lifecycle: NEW · ACTIVE · STRENGTHENING · WEAKENING · TP1/TP2 · SL · INVALIDATED · EXPIRED. Backtests stay separate.</p></div>
       </div>
       <div className="row" style={{ marginBottom: 12 }}>
         <CategoryTabs value={category} onChange={setCategory} />
         <select value={status} onChange={(e) => setStatus(e.target.value)}>
-          {['ALL', 'NEW', 'ACTIVE', 'TP1_HIT', 'TP2_HIT', 'SL_HIT', 'INVALIDATED', 'EXPIRED'].map((s) => (
+          {['ALL', 'NEW', 'ACTIVE', 'STRENGTHENING', 'WEAKENING', 'TP1_HIT', 'TP2_HIT', 'SL_HIT', 'INVALIDATED', 'EXPIRED'].map((s) => (
             <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>
           ))}
         </select>

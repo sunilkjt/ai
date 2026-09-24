@@ -13,7 +13,7 @@ export default function Watchlist(): JSX.Element {
   const selectSymbol = useStore((s) => s.selectSymbol);
 
   const rows = favorites
-    .map((f) => markets.find((m) => m.internalSymbol === f))
+    .map((f) => markets.find((m) => m.marketId === f || m.internalSymbol === f))
     .filter((m): m is NonNullable<typeof m> => Boolean(m));
 
   return (
@@ -29,11 +29,11 @@ export default function Watchlist(): JSX.Element {
             <thead><tr><th>★</th><th>Asset</th><th>Category</th><th>DEX</th><th>Price</th><th>24H %</th><th>OI</th><th>Funding</th><th>Regime</th><th>AI</th></tr></thead>
             <tbody>
               {rows.map((m) => {
-                const a = analyses[m.internalSymbol];
+                const a = analyses[m.marketId];
                 return (
-                  <tr key={m.internalSymbol}>
-                    <td><button className="btn secondary" style={{ padding: '2px 8px' }} onClick={() => toggleFavorite(m.internalSymbol)}>★</button></td>
-                    <td><Link to="/analyst" onClick={() => selectSymbol(m.internalSymbol)}><strong>{m.displaySymbol}</strong></Link> <span className="muted">{m.assetName !== m.displaySymbol ? m.assetName : ''}</span></td>
+                  <tr key={m.marketId}>
+                    <td><button className="btn secondary" style={{ padding: '2px 8px' }} onClick={() => toggleFavorite(m.marketId)}>★</button></td>
+                    <td><Link to="/analyst" onClick={() => selectSymbol(m.marketId)}><strong>{m.displaySymbol}</strong></Link> <span className="muted">{m.assetName !== m.displaySymbol ? m.assetName : ''}</span></td>
                     <td><CategoryBadge value={m.category} /></td>
                     <td><span className="badge">{m.dexLabel}</span></td>
                     <td>{fmtPrice(a?.price ?? m.price)}</td>

@@ -10,8 +10,8 @@ export default function SignalDetail(): JSX.Element {
   const fullAnalyses = useStore((s) => s.fullAnalyses);
   const sig = signals.find((x) => x.id === id);
   const liveList = Object.values(analyses);
-  const live = liveList.find((x) => x.symbol === sig?.symbol || x.internalSymbol === sig?.symbol);
-  const full = sig ? fullAnalyses[sig.symbol] ?? fullAnalyses[live?.internalSymbol ?? ''] : undefined;
+  const live = liveList.find((x) => x.marketId === sig?.marketId || x.symbol === sig?.symbol || x.internalSymbol === sig?.symbol);
+  const full = sig ? fullAnalyses[sig.marketId ?? ''] ?? fullAnalyses[live?.marketId ?? ''] : undefined;
 
   if (!sig) {
     return <div><h1>Signal not found</h1><p><Link to="/signals">Back to signals</Link></p></div>;

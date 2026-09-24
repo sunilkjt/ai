@@ -67,10 +67,10 @@ export default function Dashboard(): JSX.Element {
           )}
           <ul className="tight">
             {highConfluence.map((a) => (
-              <li key={a.internalSymbol}>
+              <li key={a.marketId}>
                 <Badge value={a.signal.direction} /> <strong>{a.symbol}</strong>{' '}
                 <CategoryBadge value={a.category} /> {a.signal.timeframe} · conf {a.signal.confluenceScore} ·{' '}
-                <Link to="/analyst" onClick={() => selectSymbol(a.internalSymbol)}>Review →</Link>
+                <Link to="/analyst" onClick={() => selectSymbol(a.marketId)}>Review →</Link>
               </li>
             ))}
           </ul>
@@ -106,9 +106,9 @@ export default function Dashboard(): JSX.Element {
                     <thead><tr><th>Asset</th><th>Price</th><th>24H %</th><th>OI</th><th>Funding</th><th>Regime</th><th>AI Signal</th></tr></thead>
                     <tbody>
                       {rows.map((m) => {
-                        const a = analyses[m.internalSymbol];
+                        const a = analyses[m.marketId];
                         return (
-                          <tr key={m.internalSymbol}>
+                          <tr key={m.marketId}>
                             <td><strong>{m.displaySymbol}</strong></td>
                             <td>{fmtPrice(a?.price ?? m.price)}</td>
                             <td className={(a?.change24h ?? m.priceChangePercent24h ?? 0) >= 0 ? 'positive' : 'negative'}>
@@ -124,8 +124,8 @@ export default function Dashboard(): JSX.Element {
                     </tbody>
                   </table>
                 </div>
-                {rows[0] && analyses[rows[0].internalSymbol] && (
-                  <div className="muted">Updated {timeAgo(analyses[rows[0].internalSymbol].updatedAt)}</div>
+                {rows[0] && analyses[rows[0].marketId] && (
+                  <div className="muted">Updated {timeAgo(analyses[rows[0].marketId].updatedAt)}</div>
                 )}
               </div>
             );

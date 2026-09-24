@@ -57,20 +57,20 @@ export default function Markets(): JSX.Element {
               <tbody>
                 {rows.length === 0 && <tr><td colSpan={13} className="muted">No markets match. Try ALL or another search.</td></tr>}
                 {rows.slice(0, 150).map((m) => {
-                  const a = analyses[m.internalSymbol];
+                  const a = analyses[m.marketId];
                   const exec = a?.timeframes.find((t) => t.role === 'CONFIRMATION') ?? a?.timeframes[a.timeframes.length - 1];
-                  const fav = favorites.includes(m.internalSymbol);
+                  const fav = favorites.includes(m.marketId);
                   const isNew = newMarketIds.includes(m.marketId);
                   const stale = isMarketStale(m);
                   return (
                     <tr key={m.marketId}>
                       <td>
-                        <button className="btn secondary" style={{ padding: '2px 8px' }} onClick={() => toggleFavorite(m.internalSymbol)} title="Favorite">
+                        <button className="btn secondary" style={{ padding: '2px 8px' }} onClick={() => toggleFavorite(m.marketId)} title="Favorite">
                           {fav ? '★' : '☆'}
                         </button>
                       </td>
                       <td>
-                        <Link to="/analyst" onClick={() => selectSymbol(m.internalSymbol)}><strong>{m.displaySymbol}</strong></Link>{' '}
+                        <Link to="/analyst" onClick={() => selectSymbol(m.marketId)}><strong>{m.displaySymbol}</strong></Link>{' '}
                         <span className="muted">{m.assetName !== m.displaySymbol ? m.assetName : ''}</span>{' '}
                         {isNew && <span className="badge">NEW</span>}{' '}
                         {stale && <span className="badge wait">STALE</span>}

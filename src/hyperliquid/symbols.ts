@@ -195,12 +195,27 @@ export function resolveSymbol(internalSymbol: string, dex = ''): HyperliquidSymb
   };
 }
 
-/** Unique market identity: dex-qualified so identical symbols on different DEXes never collide. */
+/**
+ * Canonical market identity: DEX + ":" + SYMBOL.
+ *   main dex  → "main:BTC"
+ *   HIP-3 dex → "xyz:TSLA" (dex + base coin name)
+ * The DEX qualifier guarantees identical symbols on different DEXes
+ * (main:STX vs para:STX) never collide or overwrite each other.
+ */
 export function marketIdFor(internalSymbol: string, dex = ''): string {
-  if (!dex) return internalSymbol;
-  // HIP-3 coin names already embed the dex prefix (e.g. "xyz:TSLA" on dex "xyz").
-  if (internalSymbol.toLowerCase().startsWith(`${dex.toLowerCase()}:`)) return internalSymbol;
-  return `${dex}:${internalSymbol}`;
+  const { base } = stripDexPrefix(internalSymbol);
+  const dexPart = dex === '' ? 'main' : dex;
+  return `${dexPart}:${base.toUpperCase()}`;
+}
+
+/** Inverse of marketIdFor: split "dex:SYMBOL" back into parts. Returns null when not parseable. */
+export function parseMarketId(marketId: string): { dex: string; symbol: string } | null {
+  const idx = marketId.indexOf(':');
+  if (idx <= 0 || idx === marketId.length - 1) return null;
+  const dexPart = marketId.slice(0, idx);
+  const symbol = marketId.slice(idx + 1);
+  if (!/^[A-Za-z0-9._/-]+$/.test(dexPart) || !/^[A-Za-z0-9._/-]+$/.test(symbol)) return null;
+  return { dex: dexPart.toLowerCase() === 'main' ? '' : dexPart, symbol: symbol.toUpperCase() };
 }
 
 /** Human DEX label — never invents a name: "MAIN" for the main dex, else the actual dex identifier. */

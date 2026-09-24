@@ -49,8 +49,15 @@ export interface SymbolAnalysis {
   updatedAt: number;
 }
 
-export async function fetchCandlesCached(coin: string, tf: string, limit = APP_CONFIG.candleLimit): Promise<{ candles: Candle[]; offline: boolean; demo: boolean }> {
-  const key = `${coin}|${tf}|${limit}`;
+export async function fetchCandlesCached(
+  coin: string,
+  tf: string,
+  limit = APP_CONFIG.candleLimit,
+  marketId = coin,
+): Promise<{ candles: Candle[]; offline: boolean; demo: boolean }> {
+  // Cache is keyed by canonical marketId: the same coin name on two DEXes
+  // must never share candles.
+  const key = `${marketId}|${tf}|${limit}`;
   const hit = candleCache.get(key);
   if (hit) return { candles: hit, offline: false, demo: false };
   try {
@@ -98,8 +105,9 @@ export async function analyzeSymbol(
 
   const frames: TimeframeAnalysis[] = [];
   let demo = false;
+  const cacheId = market?.marketId ?? coin;
   for (const tf of TIMEFRAMES) {
-    const { candles, offline: off, demo: isDemo } = await fetchCandlesCached(coin, tf.id);
+    const { candles, offline: off, demo: isDemo } = await fetchCandlesCached(coin, tf.id, APP_CONFIG.candleLimit, cacheId);
     if (off) offline = true;
     if (isDemo) demo = true;
     frames.push(analyzeTimeframe(tf.id, candles));

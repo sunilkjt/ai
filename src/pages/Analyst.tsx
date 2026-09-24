@@ -9,9 +9,9 @@ import { Card, Badge, RegimeBadge, CategoryBadge } from '../components/ui';
 import { fmtPrice } from '../utils/format';
 import { log } from '../utils/logger';
 
-function AgentMemoryCard({ symbol, current }: { symbol: string; current: string }): JSX.Element | null {
+function AgentMemoryCard({ marketId, current }: { marketId: string; current: string }): JSX.Element | null {
   const memory = useStore((s) => s.memory);
-  const entries = useMemo(() => (memory[symbol] ?? []).slice(-3).reverse(), [memory, symbol]);
+  const entries = useMemo(() => (memory[marketId] ?? []).slice(-3).reverse(), [memory, marketId]);
   if (entries.length === 0) return null;
   return (
     <div style={{ marginTop: 12 }}>
@@ -50,10 +50,10 @@ export default function Analyst(): JSX.Element {
   const [error, setError] = useState('');
 
   const options = useMemo(() => filteredMarkets({ markets, category, search, dexFilter }).slice(0, 200), [markets, category, search, dexFilter]);
-  const effectiveSymbol = options.some((m) => m.internalSymbol === selectedSymbol) ? selectedSymbol : (options[0]?.internalSymbol ?? selectedSymbol);
+  const effectiveSymbol = options.some((m) => m.marketId === selectedSymbol) ? selectedSymbol : (options[0]?.marketId ?? selectedSymbol);
   const analysis = analyses[effectiveSymbol];
   const full = fullAnalyses[effectiveSymbol];
-  const market = markets.find((m) => m.internalSymbol === effectiveSymbol);
+  const market = markets.find((m) => m.marketId === effectiveSymbol);
 
   const exec = useMemo(
     () => analysis?.timeframes.find((t) => t.timeframe === executionTimeframe) ?? analysis?.timeframes[3],
@@ -113,7 +113,7 @@ export default function Analyst(): JSX.Element {
         </div>
         <div className="row">
           <select value={effectiveSymbol} onChange={(e) => selectSymbol(e.target.value)}>
-            {options.map((m) => <option key={m.internalSymbol} value={m.internalSymbol}>{m.displaySymbol} · {m.assetName} · {m.category} · {m.dexLabel}</option>)}
+            {options.map((m) => <option key={m.marketId} value={m.marketId}>{m.displaySymbol} · {m.assetName} · {m.category} · {m.dexLabel}</option>)}
           </select>
           <select value={executionTimeframe} onChange={(e) => setExecutionTimeframe(e.target.value)}>
             {TIMEFRAMES.map((t) => <option key={t.id} value={t.id}>{t.id} — {t.label}</option>)}
@@ -177,7 +177,7 @@ export default function Analyst(): JSX.Element {
             </div>
           )}
 
-          <AgentMemoryCard symbol={analysis.symbol} current={`${analysis.signal.direction} · ${analysis.regime} · conf ${analysis.signal.confluenceScore}`} />
+          <AgentMemoryCard marketId={analysis.marketId} current={`${analysis.signal.direction} · ${analysis.regime} · conf ${analysis.signal.confluenceScore}`} />
 
           {full?.ai && (
             <div className="grid grid-2" style={{ marginTop: 12 }}>

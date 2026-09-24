@@ -72,7 +72,7 @@ export function generateSignal(params: {
 
 export function evaluateSignalLifecycle(signal: TradingSignal, price: number, now = Date.now()): SignalStatus {
   if (signal.direction === 'WAIT') return now > signal.expiresAt ? 'EXPIRED' : signal.status;
-  if (now > signal.expiresAt && (signal.status === 'NEW' || signal.status === 'ACTIVE')) return 'EXPIRED';
+  if (now > signal.expiresAt && (signal.status === 'NEW' || signal.status === 'ACTIVE' || signal.status === 'STRENGTHENING' || signal.status === 'WEAKENING')) return 'EXPIRED';
   if (signal.stopLoss == null || signal.takeProfit1 == null) return signal.status;
   if (signal.direction === 'LONG') {
     if (price <= signal.stopLoss) return 'SL_HIT';
@@ -99,4 +99,28 @@ export function transitionSignal(signal: TradingSignal, to: SignalStatus, reason
     status: to,
     history: [...signal.history, { at, from: signal.status, to, reason }].slice(-50),
   };
+}
+
+/**
+ * Analytic strength state for live directional signals.
+ * STRENGTHENING: confluence up ≥10 with direction agreement.
+ * WEAKENING: confluence down ≥10, direction lost/flipped, or trap risk HIGH.
+ * Returns null when neither applies (keep current status). History is never overwritten.
+ */
+export function assessSignalStrength(
+  signal: TradingSignal,
+  currentConfluence: number,
+  currentDirection: TradingSignal['direction'],
+  trapRisk: import('../types').TrapRisk | null,
+): 'STRENGTHENING' | 'WEAKENING' | null {
+  if (signal.direction === 'WAIT') return null;
+  if (!['NEW', 'ACTIVE', 'STRENGTHENING', 'WEAKENING'].includes(signal.status)) return null;
+  if (currentDirection !== signal.direction) {
+    return 'WEAKENING';
+  }
+  if (trapRisk === 'HIGH') return 'WEAKENING';
+  const d = currentConfluence - signal.confluenceScore;
+  if (d >= 10) return 'STRENGTHENING';
+  if (d <= -10) return 'WEAKENING';
+  return null;
 }

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { HyperliquidMarket } from '../src/types';
-import { classifyMarket, marketIdFor, dexLabelFor, assetNameFor, aliasesFor } from '../src/hyperliquid/symbols';
+import { classifyMarket, marketIdFor, parseMarketId, dexLabelFor, assetNameFor, aliasesFor } from '../src/hyperliquid/symbols';
 import { filteredMarkets, availableDexes, isMarketStale } from '../src/store/useStore';
 import { findMarket } from '../src/providers/market-data/hyperliquid';
 import { buildAnalystUserMessage } from '../src/agents/aiContext';
@@ -45,7 +45,7 @@ const EMPTY_DERIV: DerivativesAnalysis = {
 
 describe('market identity', () => {
   it('marketId is dex-qualified and dex labels never invented', () => {
-    expect(marketIdFor('BTC', '')).toBe('BTC');
+    expect(marketIdFor('BTC', '')).toBe('main:BTC');
     expect(marketIdFor('xyz:TSLA', 'xyz')).toBe('xyz:TSLA');
     expect(marketIdFor('ABC', 'dexA')).toBe('dexA:ABC');
     expect(dexLabelFor('')).toBe('MAIN');
@@ -62,6 +62,22 @@ describe('market identity', () => {
     expect(byId.size).toBe(2);
     expect(findMarket(registry, a.marketId)).toBe(a);
     expect(findMarket(registry, b.marketId)).toBe(b);
+  });
+
+  it('canonical DEX:SYMBOL form resolves (main:BTC, xyz:TSLA)', () => {
+    expect(parseMarketId('main:BTC')).toEqual({ dex: '', symbol: 'BTC' });
+    expect(parseMarketId('xyz:TSLA')).toEqual({ dex: 'xyz', symbol: 'TSLA' });
+    expect(parseMarketId('BTC')).toBeNull();
+    const registry = [
+      mockMarket({ internalSymbol: 'BTC', dex: '' }),
+      mockMarket({ internalSymbol: 'xyz:TSLA', dex: 'xyz' }),
+    ];
+    expect(findMarket(registry, 'main:BTC')?.internalSymbol).toBe('BTC');
+    expect(findMarket(registry, 'xyz:TSLA')?.internalSymbol).toBe('xyz:TSLA');
+    // main:BTC and xyz:BTC must never overwrite each other
+    const both = [...registry, mockMarket({ internalSymbol: 'xyz:BTC', dex: 'xyz' })];
+    expect(findMarket(both, 'main:BTC')?.internalSymbol).toBe('BTC');
+    expect(findMarket(both, 'xyz:BTC')?.internalSymbol).toBe('xyz:BTC');
   });
 
   it('same display symbol on different DEXes keeps both (STX case)', () => {

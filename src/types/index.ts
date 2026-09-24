@@ -306,7 +306,7 @@ export interface ConfluenceResult {
 }
 
 export type SignalStatus =
-  | 'NEW' | 'ACTIVE' | 'TP1_HIT' | 'TP2_HIT' | 'SL_HIT' | 'EXPIRED' | 'INVALIDATED'
+  | 'NEW' | 'ACTIVE' | 'STRENGTHENING' | 'WEAKENING' | 'TP1_HIT' | 'TP2_HIT' | 'SL_HIT' | 'EXPIRED' | 'INVALIDATED'
   | 'WATCHING' | 'CANDIDATE' | 'AI_REVIEW' | 'CONFIRMED' | 'CONDITIONAL';
 
 export type TrapRisk = 'LOW' | 'MEDIUM' | 'HIGH';
@@ -529,12 +529,24 @@ export interface AISignal {
   explanation: string;
 }
 
+/** Persistent per-marketId analysis memory (structured summaries, never raw history). */
 export interface AnalysisMemoryEntry {
   at: number;
+  marketId: string;
+  display: string;
   decision: string;
   regime: MarketRegime;
   direction: Direction;
   confluence: number;
+  confidence: number | null;
+  entry: number | null;
+  stopLoss: number | null;
+  takeProfit1: number | null;
+  riskReward: number | null;
+  structure: string;
+  trapRisk: TrapRisk | null;
+  /** e.g. "LONG 2 / SHORT 0 / WAIT 4" — agent disagreement snapshot */
+  disagreement: string;
   summary: string;
 }
 

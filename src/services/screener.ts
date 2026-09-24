@@ -173,7 +173,7 @@ export async function scanFull(
         provider: useAI ? (opts.aiProvider ?? null) : null,
         aiEnabled: useAI,
         riskOpts: opts.riskOpts,
-        memory: opts.memoryOf?.(analysis.symbol) ?? [],
+        memory: opts.memoryOf?.(analysis.marketId) ?? [],
         maxAiCalls: 2,
       });
       if (useAI && out.ai) aiReviewed += 1;

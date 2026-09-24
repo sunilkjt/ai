@@ -136,15 +136,12 @@ export default function Chat(): JSX.Element {
     // "What changed since the last scan?"
     if (/what changed|changed since/.test(s)) {
       const deltas: string[] = [];
-      for (const [sym, entries] of Object.entries(st.memory)) {
+      for (const entries of Object.values(st.memory)) {
         const last = entries[entries.length - 1];
-        const prev = entries[entries.length - 2];
-        if (last && prev && (last.direction !== prev.direction || last.regime !== prev.regime)) {
-          deltas.push(`• ${sym}: ${prev.direction}/${prev.regime} → ${last.direction}/${last.regime}`);
-        }
+        if (last) deltas.push(`• ${last.display}: ${last.summary}`);
       }
-      if (!deltas.length) return `Tool getPreviousAnalysis: no direction/regime changes recorded across ${Object.keys(st.memory).length} tracked markets.`;
-      return `Tool getPreviousAnalysis → recent changes:\n${deltas.slice(0, 8).join('\n')}`;
+      if (!deltas.length) return `Tool getPreviousAnalysis: no remembered analyses yet across ${Object.keys(st.memory).length} tracked markets.`;
+      return `Tool getPreviousAnalysis → latest per-market memory:\n${deltas.slice(0, 8).join('\n')}`;
     }
 
     // "Show me markets with bullish 4H and bearish 15M structure"
@@ -208,7 +205,7 @@ export default function Chat(): JSX.Element {
       <div className="topbar">
         <div><h1>AI Chat</h1><p>Answers only from the app's structured market data. Never fabricates live prices.</p></div>
         <select value={selectedSymbol} onChange={(e) => selectSymbol(e.target.value)}>
-          {Object.keys(analyses).map((s) => <option key={s} value={s}>{s}</option>)}
+          {Object.keys(analyses).map((k) => <option key={k} value={k}>{analyses[k]?.symbol ?? k} · {analyses[k]?.dexLabel ?? ''}</option>)}
         </select>
       </div>
       <Card title={`Context: ${selectedSymbol}`}>

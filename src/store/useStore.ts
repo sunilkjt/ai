@@ -5,6 +5,7 @@ import type { CategoryFilter } from '../config/app';
 import { APP_CONFIG, resolveDefaultCategory } from '../config/app';
 import { aliasesFor } from '../hyperliquid/symbols';
 import { transitionSignal } from '../core/signals';
+import { detectMeaningfulChange, summarizeMemoryEntry } from '../services/memory';
 
 interface AppState {
   markets: HyperliquidMarket[];
@@ -17,13 +18,15 @@ interface AppState {
   /** DEX filter: 'ALL' or the actual dex identifier ('' = MAIN) */
   dexFilter: string;
   search: string;
-  favorites: string[]; // internal symbols
+  /** Canonical marketIds (DEX:SYMBOL). Migrated one-time from legacy internal symbols. */
+  favorites: string[];
   executionTimeframe: string;
-  analyses: Record<string, SymbolAnalysis>; // keyed by internal symbol
+  analyses: Record<string, SymbolAnalysis>; // keyed by canonical marketId
   signals: TradingSignal[];
-  selectedSymbol: string; // internal symbol
+  /** Canonical marketId of the selected market */
+  selectedSymbol: string;
   selectedSignalId: string | null;
-  fullAnalyses: Record<string, FinalTradeAnalysis>;
+  fullAnalyses: Record<string, FinalTradeAnalysis>; // keyed by canonical marketId
   aiEnabled: boolean;
   riskPercent: number;
   leverage: number;
@@ -39,17 +42,17 @@ interface AppState {
   setDexFilter: (d: string) => void;
   setSearch: (s: string) => void;
   toggleFavorite: (internal: string) => void;
-  setAnalysis: (internal: string, a: SymbolAnalysis) => void;
+  setAnalysis: (marketId: string, a: SymbolAnalysis) => void;
   setLoading: (symbol: string, v: boolean) => void;
   setError: (symbol: string, e: string) => void;
   addSignal: (s: TradingSignal) => void;
   updateSignal: (s: TradingSignal, reason?: string) => void;
   selectSymbol: (s: string) => void;
   selectSignal: (id: string | null) => void;
-  setFull: (symbol: string, f: FinalTradeAnalysis) => void;
-  /** Structured agent memory per market (capped, summaries only) */
+  setFull: (marketId: string, f: FinalTradeAnalysis) => void;
+  /** Structured agent memory per marketId (capped, summaries only) */
   memory: Record<string, AnalysisMemoryEntry[]>;
-  recordMemory: (symbol: string, e: AnalysisMemoryEntry) => void;
+  recordMemory: (marketId: string, e: AnalysisMemoryEntry) => void;
   // screener
   screenResults: ScreenResult[];
   screenStats: ScreenerStats | null;
@@ -60,13 +63,15 @@ interface AppState {
   setScreener: (r: Partial<Pick<AppState, 'screenResults' | 'screenStats' | 'scanning' | 'lastScanAt' | 'autoScanMinutes' | 'lastAgentLedger'>>) => void;
   setExecutionTimeframe: (tf: string) => void;
   setRisk: (r: Partial<Pick<AppState, 'riskPercent' | 'leverage' | 'accountBalance' | 'aiEnabled'>>) => void;
-  marketCategoryOf: (internal: string) => AssetCategory;
+  marketCategoryOf: (marketId: string) => AssetCategory;
 }
 
 const HISTORY_KEY = 'sunil-hl-signals-v1';
 const FAV_KEY = 'sunil-hl-favorites-v1';
 const PREF_KEY = 'sunil-hl-prefs-v1';
-const KNOWN_MARKETS_KEY = 'sunil-hl-known-markets-v1';
+// v2: canonical DEX:SYMBOL ids (v1 used bare internal symbols).
+const KNOWN_MARKETS_KEY = 'sunil-hl-known-markets-v2';
+const FAV_MIGRATED_KEY = 'sunil-hl-favorites-migrated-v2';
 
 function loadKnownMarketIds(): string[] {
   try {
@@ -136,11 +141,30 @@ export const useStore = create<AppState>((set, get) => ({
   lastUpdated: null,
   setMarkets: (markets) => {
     const st = get();
+    // One-time favorites migration: legacy internal symbols → canonical marketIds.
+    let favorites = st.favorites;
+    try {
+      if (typeof localStorage !== 'undefined' && !localStorage.getItem(FAV_MIGRATED_KEY) && favorites.length) {
+        const migrated = favorites.flatMap((f) => {
+          const hit = markets.find((m) => m.marketId === f || m.internalSymbol === f);
+          return hit ? [hit.marketId] : [];
+        });
+        favorites = [...new Set(migrated)];
+        localStorage.setItem(FAV_KEY, JSON.stringify(favorites));
+        localStorage.setItem(FAV_MIGRATED_KEY, '1');
+      } else if (typeof localStorage !== 'undefined' && !localStorage.getItem(FAV_MIGRATED_KEY)) {
+        localStorage.setItem(FAV_MIGRATED_KEY, '1');
+      }
+    } catch { /* ignore — never break discovery */ }
     let selectedSymbol = st.selectedSymbol;
-    if (!selectedSymbol || !markets.some((m) => m.internalSymbol === selectedSymbol)) {
+    if (!selectedSymbol || !markets.some((m) => m.marketId === selectedSymbol || m.internalSymbol === selectedSymbol)) {
       // Prefer first STOCK, else first market
       const stock = markets.find((m) => m.category === 'STOCK');
-      selectedSymbol = (stock ?? markets[0])?.internalSymbol ?? '';
+      selectedSymbol = (stock ?? markets[0])?.marketId ?? '';
+    } else {
+      // Normalize legacy internal selection to canonical marketId.
+      const hit = markets.find((m) => m.marketId === selectedSymbol || m.internalSymbol === selectedSymbol);
+      if (hit) selectedSymbol = hit.marketId;
     }
     // NEW-market detection: ids never seen in any previous discovery.
     // First-ever discovery establishes the baseline (nothing flagged NEW).
@@ -159,7 +183,7 @@ export const useStore = create<AppState>((set, get) => ({
     // Drop DEX filter if the dex vanished from the universe
     let dexFilter = st.dexFilter;
     if (dexFilter !== 'ALL' && !markets.some((m) => m.dex === dexFilter)) dexFilter = 'ALL';
-    set({ markets, marketsUpdatedAt: Date.now(), selectedSymbol, newMarketIds, dexFilter });
+    set({ markets, marketsUpdatedAt: Date.now(), selectedSymbol, favorites, newMarketIds, dexFilter });
   },
   setMarketsLoading: (marketsLoading) => set({ marketsLoading }),
   setMarketsError: (marketsError) => set({ marketsError }),
@@ -178,14 +202,14 @@ export const useStore = create<AppState>((set, get) => ({
     } catch { /* ignore */ }
   },
   setSearch: (search) => set({ search }),
-  toggleFavorite: (internal) =>
+  toggleFavorite: (marketId) =>
     set((s) => {
-      const has = s.favorites.includes(internal);
-      const favorites = has ? s.favorites.filter((x) => x !== internal) : [...s.favorites, internal];
+      const has = s.favorites.includes(marketId);
+      const favorites = has ? s.favorites.filter((x) => x !== marketId) : [...s.favorites, marketId];
       try { localStorage.setItem(FAV_KEY, JSON.stringify(favorites)); } catch { /* ignore */ }
       return { favorites };
     }),
-  setAnalysis: (internal, a) => set((s) => ({ analyses: { ...s.analyses, [internal]: a }, lastUpdated: Date.now() })),
+  setAnalysis: (marketId, a) => set((s) => ({ analyses: { ...s.analyses, [marketId]: a }, lastUpdated: Date.now() })),
   setLoading: (symbol, v) => set((s) => ({ loading: { ...s.loading, [symbol]: v } })),
   setError: (symbol, e) => set((s) => ({ errors: { ...s.errors, [symbol]: e } })),
   addSignal: (sig) =>
@@ -208,15 +232,16 @@ export const useStore = create<AppState>((set, get) => ({
   selectSignal: (selectedSignalId) => set({ selectedSignalId }),
   setFull: (symbol, f) => set((s) => ({ fullAnalyses: { ...s.fullAnalyses, [symbol]: f } })),
   memory: {},
-  recordMemory: (symbol, e) =>
+  recordMemory: (marketId, e) =>
     set((s) => {
-      const prev = s.memory[symbol] ?? [];
+      const prev = s.memory[marketId] ?? [];
       const last = prev[prev.length - 1];
-      // Only remember change, not every identical tick.
-      if (last && last.direction === e.direction && last.regime === e.regime && Math.abs(last.confluence - e.confluence) < 5) {
-        return s;
-      }
-      return { memory: { ...s.memory, [symbol]: [...prev, e].slice(-20) } };
+      // Persistent memory keeps the first entry and every MEANINGFUL change only.
+      const delta = detectMeaningfulChange(last, { ...e, marketId });
+      if (!delta.remember) return s;
+      const full = { ...e, marketId };
+      const entry = { ...full, summary: `${summarizeMemoryEntry(full)} — ${delta.reasons.join('; ')}` };
+      return { memory: { ...s.memory, [marketId]: [...prev, entry].slice(-20) } };
     }),
   screenResults: [],
   screenStats: null,
@@ -233,7 +258,7 @@ export const useStore = create<AppState>((set, get) => ({
     } catch { /* ignore */ }
   },
   setRisk: (r) => set(r),
-  marketCategoryOf: (internal) => get().markets.find((m) => m.internalSymbol === internal)?.category ?? 'UNKNOWN',
+  marketCategoryOf: (marketId) => get().markets.find((m) => m.marketId === marketId || m.internalSymbol === marketId)?.category ?? 'UNKNOWN',
 }));
 
 export function filteredMarkets(

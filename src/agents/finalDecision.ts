@@ -99,6 +99,37 @@ export interface FinalDecisionInput {
   stale: boolean;
   gateStatus: ScreenStatus;
   gateReasons: string[];
+  /** Material cross-agent contradictions (empty = none detected) */
+  contradictions?: string[];
+}
+
+/**
+ * Cross-agent contradiction review (deterministic, no averaging).
+ * Returns human-readable contradictions; callers route them to the critic and
+ * the final gate (unresolved contradiction → WAIT).
+ */
+export function detectContradictions(input: {
+  longCandidate: boolean;
+  shortCandidate: boolean;
+  structureTrend: string;
+  fundingRate: number | null;
+  trapRisk: TrapRisk;
+  direction: 'LONG' | 'SHORT' | 'WAIT';
+}): string[] {
+  const out: string[] = [];
+  if (input.longCandidate && input.shortCandidate) {
+    out.push('LONG and SHORT specialists both claim candidacy — setups overlap');
+  }
+  if (input.structureTrend === 'BULLISH' && input.fundingRate != null && input.fundingRate < -0.001) {
+    out.push('bullish structure vs bearish derivatives (negative funding) — agents disagree');
+  }
+  if (input.structureTrend === 'BEARISH' && input.fundingRate != null && input.fundingRate > 0.001) {
+    out.push('bearish structure vs bullish derivatives (positive funding) — agents disagree');
+  }
+  if (input.trapRisk === 'HIGH' && input.direction !== 'WAIT') {
+    out.push(`trap risk HIGH against a ${input.direction} setup`);
+  }
+  return out;
 }
 
 export interface FinalSignal {
@@ -168,6 +199,10 @@ export function decideFinalSignal(input: FinalDecisionInput): FinalSignal {
   }
   if (!ai && confluence.total < 60) {
     blockers.push(`no AI review and confluence ${confluence.total}/100 below 60 — WAIT`);
+  }
+  const contradictions = input.contradictions ?? [];
+  if (contradictions.length > 0 && (!critique || critique.approval !== 'APPROVE')) {
+    blockers.push(`Evidence is materially contradictory: ${contradictions.join('; ')}`);
   }
 
   let decision: 'LONG' | 'SHORT' | 'WAIT' = 'WAIT';

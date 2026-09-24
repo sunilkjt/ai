@@ -116,6 +116,23 @@ export class OpenAICompatibleProvider implements AIProvider {
   async chat(system: string, user: string): Promise<string> {
     return this.complete(system, user);
   }
+
+  /**
+   * Agentic step: the model returns exactly one of
+   * {"type":"tool_call","tool":"...","arguments":{...}} |
+   * {"type":"final","result":{...}} | {"type":"stop","reason":"..."}.
+   * Anything else is rejected and reported (never executed blindly).
+   */
+  async decide(system: string, evidence: string): Promise<import('../../types').AgentStepDecision> {
+    const { validateAgentDecision } = await import('../../agents/agenticLoop');
+    const text = await this.complete(
+      `${system}\nRespond in strict JSON only: one tool_call, final, or stop object.`,
+      evidence,
+    );
+    const parsed = validateAgentDecision(tryParse(text));
+    if (!parsed) throw new Error('Invalid agent decision JSON');
+    return parsed;
+  }
 }
 
 function tryParse(text: string): unknown | null {
@@ -128,6 +145,7 @@ function tryParse(text: string): unknown | null {
 
 // Deterministic local fallback analyst — used when no key is configured or the API fails.
 // Clearly labeled provider:'local-fallback'. Never fabricates prices: only echoes engine facts.
+// It has no live LLM, so agentic tool decisions are honestly declined (deterministic planner only).
 export class LocalFallbackProvider implements AIProvider {
   readonly name = 'local-fallback';
   async analyze(context: AIContext): Promise<AIAnalysis> {
@@ -159,8 +177,7 @@ export class LocalFallbackProvider implements AIProvider {
   }
 
   async critique(context: AICritiqueContext): Promise<AICritique> {
-    const risks = [...context.signal.opposingReasons];
-    if (context.hyperliquid?.crowdingRisk) risks.unshift('Hyperliquid OI rising with elevated funding — crowding risk');
+    const risks = [...context.signal.opposingReasons];    if (context.hyperliquid?.crowdingRisk) risks.unshift('Hyperliquid OI rising with elevated funding — crowding risk');
     if (context.derivatives.fundingRate != null && Math.abs(context.derivatives.fundingRate) > 0.0005) {
       risks.unshift(`Funding ${context.derivatives.fundingRate > 0 ? 'elevated positive' : 'negative'} — do not chase`);
     }
@@ -180,5 +197,10 @@ export class LocalFallbackProvider implements AIProvider {
       downgraded: shouldWait && context.signal.direction !== 'WAIT',
       timestamp: Date.now(),
     };
+  }
+
+  /** No live LLM here: honestly decline agentic decisions so callers use the deterministic planner. */
+  async decide(): Promise<import('../../types').AgentStepDecision> {
+    return { type: 'stop', reason: 'no live LLM configured — deterministic planner only' };
   }
 }

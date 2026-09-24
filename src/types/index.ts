@@ -437,6 +437,32 @@ export interface ToolCallEntry {
   ms: number;
   ok: boolean;
   at: number;
+  /** Who requested it: live-AI reasoning, deterministic system, or registry loop */
+  origin: 'ai' | 'deterministic' | 'system';
+  cached: boolean;
+  error?: string;
+}
+
+/** Structured agent decision inside the agentic loop (validated before execution). */
+export interface AgentToolRequest {
+  type: 'tool_call';
+  tool: string;
+  arguments: Record<string, unknown>;
+}
+
+export type AgentStepDecision =
+  | AgentToolRequest
+  | { type: 'final'; result: unknown }
+  | { type: 'stop'; reason: string };
+
+/** Structured per-tool result envelope returned to the reasoning agent. */
+export interface ToolResultEnvelope {
+  tool: string;
+  success: boolean;
+  data?: unknown;
+  error?: string;
+  timestamp: number;
+  freshnessMs: number;
 }
 
 export interface ComponentScores {
@@ -600,6 +626,11 @@ export interface AIProvider {
   analyze(context: AIContext): Promise<AIAnalysis>;
   critique(context: AICritiqueContext): Promise<AICritique>;
   chat?(system: string, user: string): Promise<string>;
+  /**
+   * Agentic step (live LLMs only): given system instructions + current evidence,
+   * decide the next tool call, final answer, or stop. Absent → deterministic planner only.
+   */
+  decide?(system: string, evidence: string): Promise<AgentStepDecision>;
 }
 
 // ---- Market data provider abstraction (Hyperliquid-first) ----

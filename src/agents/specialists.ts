@@ -40,6 +40,14 @@ export interface SpecialistOutput {
   ms: number;
   error?: string;
   data?: unknown;
+  /** Agent's own directional read */
+  decision: 'LONG' | 'SHORT' | 'WAIT' | 'NEUTRAL' | 'UNCLEAR';
+  /** Evidence the agent wanted but could not obtain */
+  missingEvidence: string[];
+  /** Conflicts with other agents/data (filled by enrichSpecialist) */
+  contradictions: string[];
+  /** Registry tool names this agent actually invoked (filled from the trace) */
+  toolsUsed: string[];
 }
 
 export interface Specialist {
@@ -59,12 +67,47 @@ function timed<T>(fn: () => T): { result: T | null; ms: number; error?: string }
   }
 }
 
-function out(agent: AgentName, r: { result: unknown; ms: number; error?: string }, build: (v: unknown) => Omit<SpecialistOutput, 'agent' | 'ms' | 'error'> & { error?: string }): SpecialistOutput {
+function out(agent: AgentName, r: { result: unknown; ms: number; error?: string }, build: (v: unknown) => Omit<SpecialistOutput, 'agent' | 'ms' | 'missingEvidence' | 'contradictions' | 'toolsUsed'> & { error?: string }): SpecialistOutput {
   if (r.error || r.result == null) {
-    return { agent, ok: false, summary: 'agent failed', confidence: 0, evidence: [], risks: ['agent error — treated as missing data, never fabricated'], ms: r.ms, error: r.error ?? 'no result' };
+    return { agent, ok: false, summary: 'agent failed', confidence: 0, evidence: [], risks: ['agent error — treated as missing data, never fabricated'], ms: r.ms, error: r.error ?? 'no result', decision: 'UNCLEAR', missingEvidence: ['agent output unavailable'], contradictions: [], toolsUsed: [] };
   }
   const b = build(r.result);
-  return { agent, ms: r.ms, ...b };
+  return { agent, ms: r.ms, ...b, missingEvidence: [], contradictions: [], toolsUsed: [] };
+}
+
+/**
+ * Post-run enrichment: directional read, missing evidence, cross-agent
+ * contradictions, and the tools actually used (from the trace — never assumed).
+ */
+export function enrichSpecialist(
+  output: SpecialistOutput,
+  input: SpecialistInput,
+  toolsUsed: string[],
+): SpecialistOutput {
+  const missingEvidence: string[] = [];
+  if (input.derivatives.unavailable.length) missingEvidence.push(`derivatives: ${input.derivatives.unavailable.join(', ')}`);
+  if (input.timeframes.length < 6) missingEvidence.push(`only ${input.timeframes.length}/6 timeframes`);
+  const exec = input.timeframes[input.timeframes.length - 1];
+  if (exec && !exec.ict.reliable) missingEvidence.push('ICT confirmation unavailable');
+
+  let decision: SpecialistOutput['decision'] = 'NEUTRAL';
+  if (output.agent === 'long') decision = (output.data as { candidate?: boolean } | null)?.candidate ? 'LONG' : 'WAIT';
+  else if (output.agent === 'short') decision = (output.data as { candidate?: boolean } | null)?.candidate ? 'SHORT' : 'WAIT';
+  else if (output.agent === 'structure' || output.agent === 'mtf' || output.agent === 'regime') {
+    const s = output.summary;
+    decision = s.startsWith('BULLISH') || s.includes('bull') ? 'LONG' : s.startsWith('BEARISH') || s.includes('bear') ? 'SHORT' : 'NEUTRAL';
+  }
+
+  const contradictions: string[] = [];
+  if (exec) {
+    if (output.agent === 'long' && (output.data as { candidate?: boolean } | null)?.candidate && exec.structure.trend === 'BEARISH') {
+      contradictions.push('LONG candidate against bearish execution structure');
+    }
+    if (output.agent === 'short' && (output.data as { candidate?: boolean } | null)?.candidate && exec.structure.trend === 'BULLISH') {
+      contradictions.push('SHORT candidate against bullish execution structure');
+    }
+  }
+  return { ...output, decision, missingEvidence, contradictions, toolsUsed };
 }
 
 const execOf = (input: SpecialistInput): TimeframeAnalysis => input.timeframes[input.timeframes.length - 1];
@@ -89,11 +132,13 @@ export const MarketDataAgent: Specialist = {
     trace('getMarket', input.symbol, Date.now() - t, true);
     const complete = evidence.length;
     const total = complete + risks.length;
+    const missing = risks.filter((r) => r.includes('unavailable') || r.includes('only '));
     return {
       agent: 'market-data', ok: risks.filter((r) => r.includes('MISSING') || r.includes('DEMO')).length === 0,
       summary: `${complete}/${total} data checks pass${input.demo ? ' (DEMO)' : ''}`,
       confidence: total ? Math.round((complete / total) * 100) : 0,
       evidence, risks, ms: Date.now() - t,
+      decision: 'NEUTRAL', missingEvidence: missing, contradictions: [], toolsUsed: ['getMarket'],
     };
   },
 };
@@ -115,6 +160,7 @@ export const MultiTimeframeAgent: Specialist = {
       return {
         ok: true,
         summary: list.join(' · '),
+        decision: bulls > 0 && bears === 0 ? 'LONG' : bears > 0 && bulls === 0 ? 'SHORT' : 'NEUTRAL',
         confidence: Math.round(((bulls >= 4 || bears >= 4) ? 85 : bulls >= 3 || bears >= 3 ? 65 : 40)),
         evidence: list,
         risks: bulls > 0 && bears > 0 ? ['timeframes disagree — conflict noted, not hidden'] : [],
@@ -143,6 +189,7 @@ export const MarketStructureAgent: Specialist = {
       const d = v as { verdict: string; notes: string[]; bos: string | null; choch: string | null };
       return {
         ok: true, summary: `${d.verdict}${d.bos ? ` BOS-${d.bos}` : ''}${d.choch ? ` CHoCH-${d.choch}` : ''}`,
+        decision: d.verdict === 'BULLISH' ? 'LONG' : d.verdict === 'BEARISH' ? 'SHORT' : 'NEUTRAL',
         confidence: d.verdict === 'UNCLEAR' ? 30 : d.verdict === 'TRANSITION' ? 55 : 75,
         evidence: d.notes.slice(0, 4),
         risks: d.verdict === 'TRANSITION' ? ['structure in transition — breakouts fail often here'] : d.verdict === 'UNCLEAR' ? ['structure unclear — no call'] : [],
@@ -169,6 +216,7 @@ export const SMCAgent: Specialist = {
       return {
         ok: true,
         summary: s.swept ? `sweep ${s.liquiditySweep}` : `${s.fvg.length} FVG / ${s.orderBlocks.length} OB active`,
+        decision: s.points > 0 ? 'LONG' : s.points < 0 ? 'SHORT' : 'NEUTRAL',
         confidence: s.swept || s.fvg.length || s.orderBlocks.length ? 70 : 40,
         evidence, risks,
       };
@@ -189,11 +237,12 @@ export const ICTAgent: Specialist = {
     }), (ict) => {
       const c = ict as TimeframeAnalysis['ict'];
       if (!c.reliable) {
-        return { ok: true, summary: 'ICT unconfirmed — insufficient data', confidence: 20, evidence: [], risks: ['ICT confirmation unavailable — excluded from decision'] };
+        return { ok: true, summary: 'ICT unconfirmed — insufficient data', confidence: 20, evidence: [], decision: 'NEUTRAL', risks: ['ICT confirmation unavailable — excluded from decision'] };
       }
       return {
         ok: true,
         summary: `${c.marketMakerModel}${c.judasSwing ? ` · Judas ${c.judasSwing}` : ''}`,
+        decision: c.points > 0 ? 'LONG' : c.points < 0 ? 'SHORT' : 'NEUTRAL',
         confidence: 65, evidence: c.notes.slice(0, 4), risks: [],
       };
     });
@@ -219,7 +268,7 @@ export const LiquidityAgent: Specialist = {
         ...(l.below != null ? [`nearest liquidity below ${l.below}`] : []),
         ...l.grabs,
       ];
-      return { ok: true, summary: l.sweep ? `grab/sweep ${l.sweep}` : 'no sweep in progress', confidence: l.sweep ? 70 : 45, evidence, risks: [] };
+      return { ok: true, summary: l.sweep ? `grab/sweep ${l.sweep}` : 'no sweep in progress', confidence: l.sweep ? 70 : 45, evidence, risks: [], decision: l.sweep === 'LOW' ? 'LONG' : l.sweep === 'HIGH' ? 'SHORT' : 'NEUTRAL' };
     });
   },
 };
@@ -254,7 +303,7 @@ export const DerivativesAgent: Specialist = {
       const risks: string[] = [];
       if (d.fundingRate != null && Math.abs(d.fundingRate) > 0.001) risks.push('funding extreme — crowded positioning');
       if (d.unavailable.length) risks.push(`unavailable: ${d.unavailable.join(', ')}`);
-      return { ok: true, summary: regime as string, confidence: d.unavailable.length >= 3 ? 35 : 70, evidence, risks };
+      return { ok: true, summary: regime as string, confidence: d.unavailable.length >= 3 ? 35 : 70, evidence, risks, decision: 'NEUTRAL' };
     });
   },
 };
@@ -274,6 +323,7 @@ export const MarketRegimeAgent: Specialist = {
       const d = v as { bulls: number; bears: number; total: number };
       return {
         ok: true, summary: `${input.regime} (${d.bulls} bull / ${d.bears} bear / ${d.total} TF)`,
+        decision: input.regime.includes('BULLISH') || input.regime === 'BREAKOUT' ? 'LONG' : input.regime.includes('BEARISH') || input.regime === 'BREAKDOWN' ? 'SHORT' : 'NEUTRAL',
         confidence: 70, evidence: [`regime ${input.regime}`, `agreement ${Math.max(d.bulls, d.bears)}/${d.total}`],
         risks: d.bulls > 0 && d.bears > 0 ? ['mixed regime — partial agreement only'] : [],
       };
@@ -299,6 +349,7 @@ export const AssetClassAgent: Specialist = {
     }), (insights) => ({
       ok: true,
       summary: `${(insights as string[]).length} asset notes`,
+      decision: 'NEUTRAL',
       confidence: 65, evidence: (insights as string[]).slice(0, 5), risks: [],
     }));
   },
@@ -317,6 +368,7 @@ export const ConfluenceAgent: Specialist = {
       const c2 = c as SpecialistInput['confluence'];
       return {
         ok: true, summary: `${c2.total}/100 ${c2.band} ${c2.direction} (setup quality, not profit odds)`,
+        decision: c2.direction === 'BULLISH' ? 'LONG' : c2.direction === 'BEARISH' ? 'SHORT' : 'NEUTRAL',
         confidence: Math.min(90, 40 + c2.total / 2),
         evidence: c2.items.map((i) => `${i.block} ${i.score}/${i.max} ${i.direction}`),
         risks: c2.opposingReasons.slice(0, 4),
@@ -341,6 +393,7 @@ export const LongSetupAgent: Specialist = {
       return {
         ok: true,
         summary: e.candidate ? `LONG CANDIDATE (${passed}/10 checks)` : `no LONG (${e.missing.length} blockers)`,
+        decision: e.candidate ? 'LONG' : 'WAIT',
         confidence: Math.round((passed / 10) * 100),
         evidence: e.checks.filter((c) => c.pass).map((c) => `${c.name}: ${c.detail}`),
         risks: e.missing,
@@ -365,6 +418,7 @@ export const ShortSetupAgent: Specialist = {
       return {
         ok: true,
         summary: e.candidate ? `SHORT CANDIDATE (${passed}/10 checks)` : `no SHORT (${e.missing.length} blockers)`,
+        decision: e.candidate ? 'SHORT' : 'WAIT',
         confidence: Math.round((passed / 10) * 100),
         evidence: e.checks.filter((c) => c.pass).map((c) => `${c.name}: ${c.detail}`),
         risks: e.missing,
@@ -391,6 +445,7 @@ export const ContrarianAgent: Specialist = {
       return {
         ok: true,
         summary: f.length ? `${f.length} challenges to ${input.signal.direction} thesis` : `no challenge to ${input.signal.direction} thesis`,
+        decision: 'NEUTRAL',
         confidence: f.length ? 65 : 50,
         evidence: f,
         risks: f,
@@ -416,6 +471,7 @@ export const TrapDetectionAgent: Specialist = {
       const r = rep as ReturnType<typeof detectTraps>;
       return {
         ok: true, summary: `trap risk ${r.risk} (${r.flags.length} flags)`,
+        decision: 'NEUTRAL',
         confidence: r.risk === 'LOW' ? 70 : r.risk === 'MEDIUM' ? 60 : 75,
         evidence: r.flags, risks: r.flags,
       };
@@ -436,11 +492,12 @@ export const RiskAgent: Specialist = {
     }), (risk) => {
       const r = risk as RiskAnalysis | null;
       if (!r) {
-        return { ok: true, summary: 'no trade — risk uncomputable', confidence: 50, evidence: [], risks: ['no valid entry/SL/TP — WAIT'] };
+        return { ok: true, summary: 'no trade — risk uncomputable', confidence: 50, evidence: [], risks: ['no valid entry/SL/TP — WAIT'], decision: 'WAIT' };
       }
       return {
         ok: r.valid,
         summary: `R:R ${r.riskReward.toFixed(2)}${r.valid ? '' : ' — INVALID'}`,
+        decision: 'NEUTRAL',
         confidence: r.valid ? 80 : 40,
         evidence: [`entry ${r.entry}`, `SL ${r.stopLoss}`, `TP1 ${r.takeProfit1}`, `R:R ${r.riskReward.toFixed(2)}`],
         risks: r.warnings,
@@ -475,6 +532,7 @@ export const SignalCriticAgent: Specialist = {
       return {
         ok: true,
         summary: challenges.length ? `${challenges.length} deterministic challenges` : 'no deterministic challenges',
+        decision: 'NEUTRAL',
         confidence: 60, evidence: challenges, risks: challenges,
       };
     });

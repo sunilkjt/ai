@@ -44,6 +44,19 @@ export default function AgentMonitor(): JSX.Element {
     () => lastToolLog.filter((e) => logAgent === 'ALL' || e.agent === logAgent).slice(-200).reverse(),
     [lastToolLog, logAgent],
   );
+  const perAgentTools = useMemo(() => {
+    const m = new Map<string, { requested: number; completed: number; failed: number; cached: number; timeouts: number }>();
+    for (const e of lastToolLog) {
+      const cur = m.get(e.agent) ?? { requested: 0, completed: 0, failed: 0, cached: 0, timeouts: 0 };
+      cur.requested += 1;
+      if (e.ok) cur.completed += 1;
+      else cur.failed += 1;
+      if (e.cached) cur.cached += 1;
+      if (!e.ok && (e.error ?? '').includes('timeout')) cur.timeouts += 1;
+      m.set(e.agent, cur);
+    }
+    return [...m.entries()];
+  }, [lastToolLog]);
 
   const byAgent = useMemo(() => {
     const m = new Map<AgentName, { ok: number; skipped: number; failed: number; last: string }>();
@@ -112,15 +125,18 @@ export default function AgentMonitor(): JSX.Element {
           {topSpecialists.length > 0 && (
             <div className="table-wrap">
               <table>
-                <thead><tr><th>Agent</th><th>Status</th><th>Exec ms</th><th>Result</th><th>Confidence</th><th>Errors</th></tr></thead>
+                <thead><tr><th>Agent</th><th>Status</th><th>Exec ms</th><th>Result</th><th>Decision</th><th>Confidence</th><th>Contradictions</th><th>Tools used</th><th>Errors</th></tr></thead>
                 <tbody>
                   {topSpecialists.map((sp) => (
                     <tr key={sp.agent}>
                       <td><strong>{sp.agent}</strong></td>
-                      <td>{sp.ok ? <span className="badge">✓ ok</span> : <span className="badge wait">failed</span>}</td>
+                      <td>{sp.ok ? <span className="badge">✓ COMPLETE</span> : <span className="badge wait">failed</span>}</td>
                       <td className="muted">{sp.ms}</td>
                       <td>{sp.summary}</td>
-                      <td>{sp.confidence}/100 <span className="muted">(evidence completeness)</span></td>
+                      <td><Badge value={sp.decision} /></td>
+                      <td>{sp.confidence}/100 <span className="muted">(evidence)</span></td>
+                      <td className="muted">{sp.contradictions.join('; ') || '—'}</td>
+                      <td className="muted">{sp.toolsUsed.join(', ') || '—'}</td>
                       <td className="muted">{sp.error ?? (sp.risks[0] ?? '—')}</td>
                     </tr>
                   ))}
@@ -148,16 +164,37 @@ export default function AgentMonitor(): JSX.Element {
               {logRows.length > 0 && (
                 <div className="table-wrap" style={{ maxHeight: 320, overflowY: 'auto' }}>
                   <table>
-                    <thead><tr><th>Agent</th><th>Tool</th><th>Input</th><th>Result</th><th>Duration ms</th><th>Timestamp</th></tr></thead>
+                    <thead><tr><th>Agent</th><th>Tool</th><th>Input</th><th>Result</th><th>Origin</th><th>Cached</th><th>Duration ms</th><th>Timestamp</th></tr></thead>
                     <tbody>
                       {logRows.map((e, i) => (
                         <tr key={i}>
                           <td>{e.agent}</td>
                           <td><strong>{e.tool}</strong></td>
                           <td className="muted">{e.input}</td>
-                          <td>{e.ok ? <span className="badge">✓ ok</span> : <span className="badge wait">failed</span>}</td>
+                          <td>{e.ok ? <span className="badge">✓ ok</span> : <span className="badge wait" title={e.error ?? ''}>failed</span>}</td>
+                          <td><span className="badge">{e.origin === 'ai' ? 'AI REQUEST' : e.origin === 'deterministic' ? 'DETERMINISTIC' : 'SYSTEM'}</span></td>
+                          <td>{e.cached ? <span className="badge">CACHED</span> : <span className="muted">live</span>}</td>
                           <td className="muted">{e.ms}</td>
                           <td className="muted">{new Date(e.at).toLocaleTimeString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {perAgentTools.length > 0 && (
+                <div className="table-wrap" style={{ marginTop: 8 }}>
+                  <table>
+                    <thead><tr><th>Agent</th><th>Requested</th><th>Completed</th><th>Failed</th><th>Cached</th><th>Timeouts</th></tr></thead>
+                    <tbody>
+                      {perAgentTools.map(([agent, s]) => (
+                        <tr key={agent}>
+                          <td><strong>{agent}</strong></td>
+                          <td>{s.requested}</td>
+                          <td className="positive">{s.completed}</td>
+                          <td className={s.failed > 0 ? 'negative' : ''}>{s.failed}</td>
+                          <td>{s.cached}</td>
+                          <td>{s.timeouts}</td>
                         </tr>
                       ))}
                     </tbody>

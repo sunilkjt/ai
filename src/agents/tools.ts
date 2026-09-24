@@ -201,7 +201,7 @@ export async function executeTool(
   const record = (ok: boolean, cached: boolean, error?: string): void => {
     const rec: ToolCallRecord = { tool: name, args, ms: Date.now() - started, ok, cached, error };
     ctx.calls.push(rec);
-    ctx.sink?.({ agent: ctx.sinkAgent ?? 'tool-loop', tool: name, input: JSON.stringify(args).slice(0, 200), ms: rec.ms, ok, at: Date.now() });
+    ctx.sink?.({ agent: ctx.sinkAgent ?? 'tool-loop', tool: name, input: JSON.stringify(args).slice(0, 200), ms: rec.ms, ok, at: Date.now(), origin: 'system', cached, error });
   };
   if (ctx.cache.has(key)) {
     record(true, true);

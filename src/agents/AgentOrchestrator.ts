@@ -11,10 +11,11 @@ import type {
   SetupEvaluation, TimeframeAnalysis, ToolCallEntry, TradingSignal, TrapRisk,
 } from '../types';
 import {
-  ALL_SPECIALISTS, SignalCriticAgent,
+  ALL_SPECIALISTS, SignalCriticAgent, enrichSpecialist,
   type SpecialistInput, type SpecialistOutput,
 } from './specialists';
-import { decideFinalSignal, type FinalSignal } from './finalDecision';
+import { decideFinalSignal, detectContradictions, type FinalSignal } from './finalDecision';
+import { createPipelineTools, runAgenticAnalyst, runAgenticCritic } from './agenticLoop';
 import { APP_CONFIG } from '../config/app';
 import { computeRisk } from '../core/risk';
 import { setupQuality } from '../core/quality';
@@ -119,7 +120,7 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
   const ledger: AgentRun[] = [];
   const toolLog: ToolCallEntry[] = [];
   const trace = (agent: SpecialistOutput['agent'], tool: string, inputSummary: string, ms: number, ok: boolean): void => {
-    toolLog.push({ agent, tool, input: inputSummary, ms, ok, at: Date.now() });
+    toolLog.push({ agent, tool, input: inputSummary, ms, ok, at: Date.now(), origin: 'deterministic', cached: false });
   };
   const maxAiCalls = input.maxAiCalls ?? 2;
   const aiOn = (input.aiEnabled ?? true) && maxAiCalls > 0;
@@ -137,7 +138,11 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
   const specialists: SpecialistOutput[] = [];
   for (const agent of [...ALL_SPECIALISTS, SignalCriticAgent]) {
     const started = Date.now();
-    const output = agent.run(specInput, (tool, summary, ms, ok) => trace(agent.name, tool, summary, ms, ok));
+    const raw = agent.run(specInput, (tool, summary, ms, ok) => trace(agent.name, tool, summary, ms, ok));
+    const output = enrichSpecialist(
+      raw, specInput,
+      toolLog.filter((e) => e.agent === agent.name).map((e) => e.tool),
+    );
     specialists.push(output);
     stage(ledger, agent.name, output.ok ? 'ok' : 'failed', output.summary, started);
   }
@@ -153,9 +158,29 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
   // Stop condition: nothing directional + weak confluence → skip expensive AI.
   const stopEarly = input.signal.direction === 'WAIT' && input.confluence.total < 40 && !longSetup.candidate && !shortSetup.candidate;
 
+  // Contradiction review input (deterministic): routed to critic + final gate.
+  const execTrend = input.timeframes[input.timeframes.length - 1]?.structure.trend ?? 'NEUTRAL';
+  const contradictions = detectContradictions({
+    longCandidate: longSetup.candidate, shortCandidate: shortSetup.candidate,
+    structureTrend: execTrend, fundingRate: input.derivatives.fundingRate,
+    trapRisk: trap.risk, direction: input.signal.direction,
+  });
+  if (contradictions.length) {
+    stage(ledger, 'contrarian', 'ok', `contradiction review: ${contradictions.join('; ')}`, t); t = Date.now();
+  }
+
   let ai: AIAnalysis | null = null;
   let critique: AICritique | null = null;
   let aiAvailable = true;
+  const pushAiTrace = (entry: { agent: string; tool: string; input: string; ms: number; ok: boolean; origin: 'ai' }): void => {
+    toolLog.push({ ...entry, at: Date.now(), cached: false });
+  };
+  const toolInput = {
+    market: input.market ?? null, marketId: input.identity?.marketId ?? input.symbol,
+    symbol: input.symbol, timeframes: input.timeframes, confluence: input.confluence,
+    signal: input.signal, derivatives: input.derivatives, memory: input.memory ?? [],
+    riskOpts: input.riskOpts,
+  };
   if (input.demo) {
     stage(ledger, 'critic', 'skipped', 'demo data — AI review withheld', t); t = Date.now();
   } else if (stopEarly || !aiOn) {
@@ -169,16 +194,60 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
       derivatives: input.derivatives, hyperliquid: input.hyperliquid,
       assetInsights: input.assetInsights, risk: null,
     };
+    const liveAgentic = active.name !== 'local-fallback' && active.decide != null;
+    const brief = (): string =>
+      `Market ${input.symbol} (${input.category} ${input.identity?.dexLabel ?? ''} perp). ` +
+      `Deterministic: ${input.signal.direction} conf ${input.confluence.total}/100 regime ${input.regime}. ` +
+      `LONG ${longSetup.candidate ? 'candidate' : `blocked: ${longSetup.missing.slice(0, 2).join('; ')}`} · ` +
+      `SHORT ${shortSetup.candidate ? 'candidate' : `blocked: ${shortSetup.missing.slice(0, 2).join('; ')}`} · ` +
+      `trap ${trap.risk}. ` +
+      (contradictions.length ? `Contradictions: ${contradictions.join('; ')}. ` : '') +
+      `Ask for any missing verified value via tools; never invent.`;
     try {
-      t = Date.now();
-      ai = await active.analyze(ctx);
-      aiCallsUsed += 1;
-      stage(ledger, 'analyst', 'ok', `AI analyst: ${ai.decision} (${ai.confidence}/100 via ${ai.provider})`, t);
-      t = Date.now();
-      const riskPreview = computeRisk(input.signal, input.riskOpts);
-      critique = await active.critique({ ...ctx, risk: riskPreview, analystSummary: ai.explanation });
-      aiCallsUsed += 1;
-      stage(ledger, 'critic', 'ok', `critic ${critique.approval} (verdict ${critique.verdict})`, t);
+      if (liveAgentic) {
+        // Genuine AI tool selection: the model pulls verified tools, then concludes.
+        t = Date.now();
+        const analystRun = await runAgenticAnalyst({
+          provider: active, toolInput, brief,
+          budget: { maxIterations: 4, maxToolCalls: 4 },
+          onTrace: pushAiTrace,
+        });
+        aiCallsUsed += analystRun.llmCalls;
+        ai = analystRun.analysis;
+        stage(ledger, 'analyst', ai ? 'ok' : 'failed',
+          ai ? `agentic analyst: ${ai.decision} (${ai.confidence}/100 via ${ai.provider})` : `agentic analyst stopped: ${analystRun.stopReason}`, t);
+        t = Date.now();
+        if (ai) {
+          const riskPreview = computeRisk(input.signal, input.riskOpts);
+          const thesis = (): string =>
+            `Thesis ${ai?.decision} ${ai?.direction} (${ai?.confidence}/100). ${ai?.explanation ?? ''} ` +
+            `Supporting: ${ai?.supportingFactors.join('; ') ?? ''} Opposing: ${ai?.opposingFactors.join('; ') ?? ''} ` +
+            (contradictions.length ? `Material contradictions: ${contradictions.join('; ')} — investigate before approving.` : '');
+          const criticRun = await runAgenticCritic({
+            provider: active, toolInput, thesis,
+            budget: { maxIterations: 4, maxToolCalls: 4 },
+            onTrace: pushAiTrace,
+          });
+          aiCallsUsed += criticRun.llmCalls;
+          critique = criticRun.critique;
+          stage(ledger, 'critic', critique ? 'ok' : 'failed',
+            critique ? `agentic critic ${critique.approval} (verdict ${critique.verdict})` : `agentic critic stopped: ${criticRun.stopReason}`, t);
+        }
+        if (!ai || !critique) throw new Error('agentic review incomplete');
+      } else {
+        t = Date.now();
+        ai = await active.analyze(ctx);
+        aiCallsUsed += 1;
+        stage(ledger, 'analyst', 'ok', `AI analyst: ${ai.decision} (${ai.confidence}/100 via ${ai.provider})`, t);
+        t = Date.now();
+        const riskPreview = computeRisk(input.signal, input.riskOpts);
+        const analystSummary = contradictions.length
+          ? `${ai.explanation}\nMaterial contradictions under review: ${contradictions.join('; ')} — investigate before approving.`
+          : ai.explanation;
+        critique = await active.critique({ ...ctx, risk: riskPreview, analystSummary });
+        aiCallsUsed += 1;
+        stage(ledger, 'critic', 'ok', `critic ${critique.approval} (verdict ${critique.verdict})`, t);
+      }
     } catch {
       aiAvailable = active.name !== 'local-fallback';
       try {
@@ -233,6 +302,7 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
     contrarian: trap.contrarian, trapRisk: trap.risk, trapFlags: trap.flags,
     ai, critique, risk, demo: input.demo, stale: input.stale,
     gateStatus: gate.status, gateReasons: gate.reasons,
+    contradictions,
   });
   let finalDecision: FinalDecision = final.decision;
   if ((status === 'CONFIRMED' || status === 'CONDITIONAL') && finalDecision !== 'LONG' && finalDecision !== 'SHORT') {

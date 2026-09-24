@@ -166,6 +166,9 @@ export function decideFinalSignal(input: FinalDecisionInput): FinalSignal {
   if (agreement === 'NONE' && signal.direction !== 'WAIT') {
     blockers.push(`insufficient agent agreement (LONG ${longVotes} / SHORT ${shortVotes} / WAIT ${waitVotes})`);
   }
+  if (!ai && confluence.total < 60) {
+    blockers.push(`no AI review and confluence ${confluence.total}/100 below 60 — WAIT`);
+  }
 
   let decision: 'LONG' | 'SHORT' | 'WAIT' = 'WAIT';
   if (blockers.length === 0) {

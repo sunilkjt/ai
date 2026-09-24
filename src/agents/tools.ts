@@ -140,6 +140,162 @@ export function createTools(deps: ToolDeps): ToolDef[] {
   return tools;
 }
 
+// ---- Genuine tool-calling loop ----
+// Observe → decide (planner) → call (budget/timeout/cache) → observe result →
+// reason (stored state) → next call → validate → structured answer.
+// Stops on sufficient evidence, missing data, contradiction, or budget.
+
+export interface ToolCallRecord {
+  tool: string;
+  args: Record<string, unknown>;
+  ms: number;
+  ok: boolean;
+  cached: boolean;
+  error?: string;
+}
+
+export interface ToolContext {
+  /** Per-loop result cache: identical calls never re-execute */
+  cache: Map<string, unknown>;
+  /** Ordered call trace */
+  calls: ToolCallRecord[];
+  maxCalls: number;
+  /** Per-tool timeout ms */
+  timeoutMs: number;
+  /** Shared trace sink (e.g. pipeline toolLog); receives a copy of every call */
+  sink?: (entry: import('../types').ToolCallEntry) => void;
+  sinkAgent?: string;
+}
+
+export function createToolContext(opts?: { maxCalls?: number; timeoutMs?: number; sink?: ToolContext['sink']; sinkAgent?: string }): ToolContext {
+  return {
+    cache: new Map(), calls: [],
+    maxCalls: opts?.maxCalls ?? 10, timeoutMs: opts?.timeoutMs ?? 15000,
+    sink: opts?.sink, sinkAgent: opts?.sinkAgent,
+  };
+}
+
+function cacheKey(name: string, args: Record<string, unknown>): string {
+  return `${name}:${JSON.stringify(args)}`;
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`tool timeout after ${ms}ms`)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+/** Execute one tool call with budget enforcement, caching and timeout. */
+export async function executeTool(
+  tools: ToolDef[],
+  ctx: ToolContext,
+  name: string,
+  args: Record<string, unknown> = {},
+): Promise<{ result: unknown; cached: boolean }> {
+  const key = cacheKey(name, args);
+  const started = Date.now();
+  const record = (ok: boolean, cached: boolean, error?: string): void => {
+    const rec: ToolCallRecord = { tool: name, args, ms: Date.now() - started, ok, cached, error };
+    ctx.calls.push(rec);
+    ctx.sink?.({ agent: ctx.sinkAgent ?? 'tool-loop', tool: name, input: JSON.stringify(args).slice(0, 200), ms: rec.ms, ok, at: Date.now() });
+  };
+  if (ctx.cache.has(key)) {
+    record(true, true);
+    return { result: ctx.cache.get(key), cached: true };
+  }
+  if (ctx.calls.filter((c) => !c.cached).length >= ctx.maxCalls) {
+    throw new Error(`max tool calls (${ctx.maxCalls}) reached — stopping`);
+  }
+  const tool = tools.find((t) => t.name === name);
+  if (!tool) throw new Error(`unknown tool: ${name}`);
+  try {
+    const result = await withTimeout(tool.run(args), ctx.timeoutMs);
+    ctx.cache.set(key, result);
+    record(true, false);
+    return { result, cached: false };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'tool failed';
+    record(false, false, msg);
+    throw e;
+  }
+}
+
+export type LoopGoal = 'market-deep-dive' | 'compare' | 'scan';
+
+export interface PlannedCall {
+  tool: string;
+  args: Record<string, unknown>;
+  storeAs: string;
+}
+
+/** Deterministic planner: decides the next tool from what is still missing. Null = stop. */
+export function planNextTool(goal: LoopGoal, have: Set<string>, params: Record<string, unknown>): PlannedCall | null {
+  const id = str(params.id);
+  if (goal === 'market-deep-dive') {
+    if (!id) return null;
+    if (!have.has('market')) return { tool: 'getMarket', args: { id }, storeAs: 'market' };
+    if (!have.has('mtf')) return { tool: 'getMultiTimeframeData', args: { id }, storeAs: 'mtf' };
+    if (!have.has('confluence')) return { tool: 'getConfluence', args: { id }, storeAs: 'confluence' };
+    if (!have.has('signal')) return { tool: 'getSignal', args: { id }, storeAs: 'signal' };
+    if (!have.has('previous')) return { tool: 'getPreviousAnalysis', args: { symbol: str(params.symbol, id) }, storeAs: 'previous' };
+    return null;
+  }
+  if (goal === 'compare') {
+    if (!have.has('comparison')) {
+      const ids = Array.isArray(params.ids) ? (params.ids as unknown[]).map(String).slice(0, 4) : [];
+      if (!ids.length) return null;
+      return { tool: 'compareMarkets', args: { ids }, storeAs: 'comparison' };
+    }
+    return null;
+  }
+  if (goal === 'scan') {
+    if (!have.has('scan')) return { tool: 'scanMarkets', args: { limit: num(params.limit, 20) }, storeAs: 'scan' };
+    return null;
+  }
+  return null;
+}
+
+export interface LoopResult {
+  done: boolean;
+  stopReason: string;
+  state: Record<string, unknown>;
+  calls: ToolCallRecord[];
+}
+
+export async function runToolLoop(
+  tools: ToolDef[],
+  ctx: ToolContext,
+  goal: LoopGoal,
+  params: Record<string, unknown> = {},
+): Promise<LoopResult> {
+  const state: Record<string, unknown> = {};
+  const have = new Set<string>();
+  for (;;) {
+    const next = planNextTool(goal, have, params);
+    if (!next) {
+      return { done: true, stopReason: 'sufficient evidence collected', state, calls: ctx.calls };
+    }
+    try {
+      const { result } = await executeTool(tools, ctx, next.tool, next.args);
+      if (result == null && next.tool !== 'getPreviousAnalysis') {
+        return { done: false, stopReason: `data unavailable from ${next.tool} — stopping without fabricating`, state, calls: ctx.calls };
+      }
+      state[next.storeAs] = result;
+      have.add(next.storeAs);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'tool failed';
+      if (msg.includes('max tool calls')) {
+        return { done: false, stopReason: msg, state, calls: ctx.calls };
+      }
+      return { done: false, stopReason: `tool ${next.tool} failed (${msg}) — stopping`, state, calls: ctx.calls };
+    }
+  }
+}
+
 // ---- AISignal schema validation (§54) ----
 
 const DECISIONS: FinalDecision[] = ['LONG', 'SHORT', 'WAIT', 'NO_TRADE'];

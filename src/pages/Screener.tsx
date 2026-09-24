@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useStore } from '../store/useStore';
-import { scanUniverse } from '../services/screener';
+import { scanUniverse, filterScreenResults } from '../services/screener';
 import { getAIProvider } from '../providers/ai/factory';
 import { Card, Badge, CategoryTabs, CategoryBadge } from '../components/ui';
 import { fmtPrice, fmtPct, timeAgo } from '../utils/format';
@@ -40,7 +40,14 @@ function SignalCard({ r }: { r: ScreenResult }): JSX.Element {
         <span className={(r.change24h ?? 0) >= 0 ? 'positive' : 'negative'}>{fmtPct(r.change24h)}</span>
         <span className="muted">Entry {fmtPrice(r.entry)} · SL {fmtPrice(r.stopLoss)} · TP1 {fmtPrice(r.takeProfit1)}{r.takeProfit2 ? ` · TP2 ${fmtPrice(r.takeProfit2)}` : ''} · R:R {r.riskReward?.toFixed(2) ?? '—'}</span>
         <span className="muted">AI {r.aiConfidence != null ? `${r.aiConfidence}/100 via ${r.aiProvider}` : 'not reviewed'}</span>
+        <span className="muted">Age {timeAgo(r.updatedAt)}</span>
       </div>
+      {r.consensus && (
+        <div className="muted" style={{ marginTop: 4 }}>
+          Consensus L{r.consensus.longVotes}/S{r.consensus.shortVotes}/W{r.consensus.waitVotes} → {r.consensus.agreement}
+          {' · '}{r.consensus.votes.map((v) => `${v.agent}:${v.stance}`).join(' · ')}
+        </div>
+      )}
       {open && (
         <div className="grid grid-2" style={{ marginTop: 8 }}>
           <div>
@@ -95,6 +102,10 @@ export default function Screener(): JSX.Element {
 
   const [category, setCategory] = useState<CategoryFilter>('ALL');
   const [dir, setDir] = useState<DirTab>('ALL');
+  const [highConfidence, setHighConfidence] = useState(false);
+  const [highConfluence, setHighConfluence] = useState(false);
+  const [lowTrap, setLowTrap] = useState(false);
+  const [highLiquidity, setHighLiquidity] = useState(false);
   const [error, setError] = useState('');
 
   async function runScan(): Promise<void> {
@@ -108,7 +119,7 @@ export default function Screener(): JSX.Element {
     log('SCREEN', `Scan started over ${markets.length} markets`);
     try {
       const st = useStore.getState();
-      const { results, stats, ledger } = await scanUniverse(markets, {
+      const { results, stats, ledger, toolLog } = await scanUniverse(markets, {
         aiProvider: aiEnabled ? getAIProvider() : null,
         aiEnabled,
         riskOpts: { accountBalance: st.accountBalance, riskPercent: st.riskPercent, leverage: st.leverage },
@@ -122,6 +133,7 @@ export default function Screener(): JSX.Element {
         scanProgress: null,
         lastScanAt: Date.now(),
         lastAgentLedger: ledger,
+        lastToolLog: toolLog,
       });
       log('SCREEN', `Scan done: ${results.length} results, LONG ${stats.longCount} SHORT ${stats.shortCount} in ${(stats.durationMs / 1000).toFixed(1)}s`);
     } catch (e) {
@@ -138,12 +150,10 @@ export default function Screener(): JSX.Element {
   }, [autoScanMinutes, markets.length]);
 
   const rows = useMemo(() => {
-    return screenResults.filter((r) => {
-      if (category !== 'ALL' && r.category !== category) return false;
-      if (dir !== 'ALL' && dirOf(r) !== dir) return false;
-      return true;
+    return filterScreenResults(screenResults, {
+      category, dir, highConfidence, highConfluence, lowTrap, highLiquidity,
     });
-  }, [screenResults, category, dir]);
+  }, [screenResults, category, dir, highConfidence, highConfluence, lowTrap, highLiquidity]);
 
   const longs = screenResults.filter((r) => dirOf(r) === 'LONG').length;
   const shorts = screenResults.filter((r) => dirOf(r) === 'SHORT').length;
@@ -201,6 +211,12 @@ export default function Screener(): JSX.Element {
           <button key={d} className={`btn${dir === d ? '' : ' secondary'}`} onClick={() => setDir(d)}>{d}</button>
         ))}
         <span className="muted">{longs} long · {shorts} short in current results</span>
+      </div>
+      <div className="row" style={{ marginTop: 8 }}>
+        <label><input type="checkbox" checked={highConfidence} onChange={(e) => setHighConfidence(e.target.checked)} /> High Confidence ≥70</label>
+        <label><input type="checkbox" checked={highConfluence} onChange={(e) => setHighConfluence(e.target.checked)} /> High Confluence ≥70</label>
+        <label><input type="checkbox" checked={lowTrap} onChange={(e) => setLowTrap(e.target.checked)} /> Low Trap Risk</label>
+        <label><input type="checkbox" checked={highLiquidity} onChange={(e) => setHighLiquidity(e.target.checked)} /> High Liquidity ≥$1M</label>
       </div>
 
       <div style={{ marginTop: 12 }}>

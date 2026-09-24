@@ -418,14 +418,24 @@ export interface FinalTradeAnalysis {
 
 export type AgentName =
   | 'discovery' | 'market-data' | 'mtf' | 'technical' | 'structure'
-  | 'smc' | 'ict' | 'derivatives' | 'asset-class' | 'confluence'
-  | 'long' | 'short' | 'contrarian' | 'trap' | 'critic' | 'risk' | 'final';
+  | 'smc' | 'ict' | 'liquidity' | 'derivatives' | 'regime' | 'asset-class' | 'confluence'
+  | 'long' | 'short' | 'contrarian' | 'trap' | 'critic' | 'analyst' | 'risk' | 'final';
 
 export interface AgentRun {
   agent: AgentName;
   status: 'ok' | 'skipped' | 'failed';
   summary: string;
   durationMs: number;
+  at: number;
+}
+
+/** One real tool invocation, traced at execution time — never fabricated. */
+export interface ToolCallEntry {
+  agent: string;
+  tool: string;
+  input: string;
+  ms: number;
+  ok: boolean;
   at: number;
 }
 
@@ -462,11 +472,17 @@ export interface ScreenResult {
   category: AssetCategory;
   price: number | null;
   change24h: number | null;
+  /** 24h notional volume — powers the High Liquidity filter (null = unknown) */
+  liquidityNotional: number | null;
   trend: string;
   mtfBias: string;
   confluence: number;
   setupQuality: number | null;
   scores: ComponentScores | null;
+  /** Agent consensus votes from the FinalDecisionAgent */
+  consensus: import('../agents/finalDecision').AgentConsensus | null;
+  /** Named deterministic specialist outputs for the top pipeline run */
+  specialists: import('../agents/specialists').SpecialistOutput[] | null;
   trapRisk: TrapRisk | null;
   trapNotes: string[];
   longSetup: SetupEvaluation | null;

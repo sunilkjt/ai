@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useStore } from '../store/useStore';
 import { Card, Badge } from '../components/ui';
@@ -13,7 +13,9 @@ const AGENTS: { name: AgentName; label: string }[] = [
   { name: 'structure', label: 'Structure' },
   { name: 'smc', label: 'SMC' },
   { name: 'ict', label: 'ICT' },
+  { name: 'liquidity', label: 'Liquidity' },
   { name: 'derivatives', label: 'Derivatives' },
+  { name: 'regime', label: 'Market Regime' },
   { name: 'asset-class', label: 'Asset Class' },
   { name: 'confluence', label: 'Confluence' },
   { name: 'long', label: 'Long Agent' },
@@ -21,16 +23,27 @@ const AGENTS: { name: AgentName; label: string }[] = [
   { name: 'contrarian', label: 'Contrarian' },
   { name: 'trap', label: 'Trap Detector' },
   { name: 'critic', label: 'Critic' },
+  { name: 'analyst', label: 'AI Analyst' },
   { name: 'risk', label: 'Risk Agent' },
   { name: 'final', label: 'Final Signal' },
 ];
 
 export default function AgentMonitor(): JSX.Element {
   const lastAgentLedger = useStore((s) => s.lastAgentLedger);
+  const lastToolLog = useStore((s) => s.lastToolLog);
   const screenStats = useStore((s) => s.screenStats);
   const scanning = useStore((s) => s.scanning);
   const lastScanAt = useStore((s) => s.lastScanAt);
   const screenResults = useStore((s) => s.screenResults);
+  const [logOpen, setLogOpen] = useState(false);
+  const [logAgent, setLogAgent] = useState<string>('ALL');
+
+  const topSpecialists = screenResults[0]?.specialists ?? [];
+  const logAgents = useMemo(() => ['ALL', ...[...new Set(lastToolLog.map((e) => e.agent))]], [lastToolLog]);
+  const logRows = useMemo(
+    () => lastToolLog.filter((e) => logAgent === 'ALL' || e.agent === logAgent).slice(-200).reverse(),
+    [lastToolLog, logAgent],
+  );
 
   const byAgent = useMemo(() => {
     const m = new Map<AgentName, { ok: number; skipped: number; failed: number; last: string }>();
@@ -43,7 +56,7 @@ export default function AgentMonitor(): JSX.Element {
     return m;
   }, [lastAgentLedger]);
 
-  const aiCalls = lastAgentLedger.filter((e) => e.agent === 'mtf' || e.agent === 'critic').length;
+  const aiCalls = lastAgentLedger.filter((e) => e.agent === 'analyst' || e.agent === 'critic').length;
 
   return (
     <div>
@@ -88,6 +101,72 @@ export default function AgentMonitor(): JSX.Element {
               </tbody>
             </table>
           </div>
+        </Card>
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        <Card
+          title={`Agent execution detail — top candidate ${screenResults[0] ? `${screenResults[0].displaySymbol} (${screenResults[0].marketId})` : '(no scan yet)'}`}
+        >
+          {topSpecialists.length === 0 && <div className="muted">Run Scan Now on the Market Screener — only actions that actually happened are shown.</div>}
+          {topSpecialists.length > 0 && (
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Agent</th><th>Status</th><th>Exec ms</th><th>Result</th><th>Confidence</th><th>Errors</th></tr></thead>
+                <tbody>
+                  {topSpecialists.map((sp) => (
+                    <tr key={sp.agent}>
+                      <td><strong>{sp.agent}</strong></td>
+                      <td>{sp.ok ? <span className="badge">✓ ok</span> : <span className="badge wait">failed</span>}</td>
+                      <td className="muted">{sp.ms}</td>
+                      <td>{sp.summary}</td>
+                      <td>{sp.confidence}/100 <span className="muted">(evidence completeness)</span></td>
+                      <td className="muted">{sp.error ?? (sp.risks[0] ?? '—')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        <Card
+          title={`Tool-call log (${lastToolLog.length} traced calls)`}
+          action={<button className="btn secondary" onClick={() => setLogOpen((o) => !o)}>{logOpen ? 'Collapse' : 'Expand'}</button>}
+        >
+          {logOpen && (
+            <>
+              <div className="row" style={{ marginBottom: 8 }}>
+                <span className="muted">Agent</span>
+                <select value={logAgent} onChange={(e) => setLogAgent(e.target.value)}>
+                  {logAgents.map((a) => <option key={a} value={a}>{a}</option>)}
+                </select>
+              </div>
+              {logRows.length === 0 && <div className="muted">No traced tool calls yet.</div>}
+              {logRows.length > 0 && (
+                <div className="table-wrap" style={{ maxHeight: 320, overflowY: 'auto' }}>
+                  <table>
+                    <thead><tr><th>Agent</th><th>Tool</th><th>Input</th><th>Result</th><th>Duration ms</th><th>Timestamp</th></tr></thead>
+                    <tbody>
+                      {logRows.map((e, i) => (
+                        <tr key={i}>
+                          <td>{e.agent}</td>
+                          <td><strong>{e.tool}</strong></td>
+                          <td className="muted">{e.input}</td>
+                          <td>{e.ok ? <span className="badge">✓ ok</span> : <span className="badge wait">failed</span>}</td>
+                          <td className="muted">{e.ms}</td>
+                          <td className="muted">{new Date(e.at).toLocaleTimeString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
+          )}
+          {!logOpen && <div className="muted">Every entry is a real traced invocation from the last scan — nothing is simulated.</div>}
         </Card>
       </div>
 

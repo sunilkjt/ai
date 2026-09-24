@@ -1,9 +1,11 @@
 import { useState } from 'react';
-import { useStore } from '../store/useStore';
+import { useStore, filteredMarkets } from '../store/useStore';
 import { Card } from '../components/ui';
 import { getAIProvider } from '../providers/ai/factory';
 import { CHAT_SYSTEM_PROMPT } from '../agents/prompts';
-import { TOOL_NAMES } from '../agents/tools';
+import { TOOL_NAMES, createTools, createToolContext, runToolLoop } from '../agents/tools';
+import { analyzeSymbol, fetchCandlesCached } from '../services/marketService';
+import { findMarket } from '../providers/market-data/hyperliquid';
 import { fmtPrice } from '../utils/format';
 
 interface Msg { role: 'user' | 'ai'; text: string; }
@@ -54,6 +56,20 @@ export default function Chat(): JSX.Element {
     if (!q || busy) return;
     setInput('');
     setLog((l) => [...l, { role: 'user', text: q }]);
+    // "deep dive X" runs the real agent tool loop (observe → plan → call → reason).
+    const dive = q.match(/deep[-\s]?dive(?: into)? (.+)|deep analy[sz]e (.+)/i);
+    if (dive) {
+      setBusy(true);
+      try {
+        const answer = await runDeepDive((dive[1] ?? dive[2] ?? '').trim());
+        setLog((l) => [...l, { role: 'ai', text: answer }]);
+      } catch {
+        setLog((l) => [...l, { role: 'ai', text: 'Deep-dive tool loop failed — deterministic analysis on the Analyst page is still available.' }]);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     const req = resolveRequestedMarket(q);
     if (req.requested && !req.matched) {
       setLog((l) => [...l, { role: 'ai', text: 'A matching Hyperliquid market was not found. I only analyze markets currently discovered on Hyperliquid — I will not substitute external data.' }]);
@@ -83,6 +99,45 @@ export default function Chat(): JSX.Element {
     } finally {
       setBusy(false);
     }
+  }
+
+  /**
+   * Deep-dive: resolve the market, then run the planner-driven tool loop and
+   * summarize only what the tools actually returned.
+   */
+  async function runDeepDive(query: string): Promise<string> {
+    const st = useStore.getState();
+    const target =
+      findMarket(st.markets, query) ??
+      findMarket(st.markets, query.toUpperCase()) ??
+      filteredMarkets({ markets: st.markets, category: 'ALL', search: query })[0];
+    if (!target) return 'A matching Hyperliquid market was not found. I only analyze markets currently discovered on Hyperliquid.';
+    const tools = createTools({
+      getMarkets: () => useStore.getState().markets,
+      searchMarkets: (qq) => filteredMarkets({ markets: useStore.getState().markets, category: 'ALL', search: qq }),
+      getMarket: (id) => findMarket(useStore.getState().markets, id),
+      getCandles: (coin, tf, limit) => fetchCandlesCached(coin, tf, limit).then((r) => r.candles),
+      analyzeMarket: (id) =>
+        analyzeSymbol(id, { withAI: true, aiProvider: null, markets: useStore.getState().markets }).then((a) => a.full),
+      getPreviousAnalyses: (symbol, n) => {
+        const s2 = useStore.getState();
+        const hit = findMarket(s2.markets, symbol);
+        return (s2.memory[hit?.marketId ?? symbol] ?? []).slice(-(n ?? 3));
+      },
+      scanFast: async () => [],
+    });
+    const ctx = createToolContext({ maxCalls: 8, timeoutMs: 20000 });
+    const loop = await runToolLoop(tools, ctx, 'market-deep-dive', { id: target.marketId, symbol: target.displaySymbol });
+    const lines = [`Deep dive: ${target.displaySymbol} (${target.assetName} · ${target.dexLabel} · ${target.category}) — ${loop.calls.length} tool calls (${loop.calls.filter((c) => c.cached).length} cached).`];
+    const sig = loop.state.signal as { direction?: string; confluenceScore?: number } | null;
+    const conf = loop.state.confluence as { total?: number; band?: string; direction?: string } | null;
+    if (sig) lines.push(`Signal: ${sig.direction} (confluence score ${sig.confluenceScore ?? '—'})`);
+    if (conf) lines.push(`Confluence: ${conf.total}/100 ${conf.band ?? ''} ${conf.direction ?? ''}`.trim());
+    const prev = loop.state.previous as { summary?: string }[] | null;
+    if (prev?.length) lines.push(`Previous: ${prev[prev.length - 1]?.summary ?? ''}`);
+    if (!loop.done) lines.push(`Stopped early: ${loop.stopReason}`);
+    lines.push('Full reasoning: open the AI Analyst. Confidence figures are AI assessment, not profit odds.');
+    return lines.join('\n');
   }
 
   /**

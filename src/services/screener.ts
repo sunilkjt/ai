@@ -220,9 +220,10 @@ export async function scanFull(
     memoryOf?: (symbol: string) => import('../types').AnalysisMemoryEntry[];
     markets?: HyperliquidMarket[];
   } = {},
-): Promise<{ results: ScreenResult[]; aiReviewed: number; ledger: AgentRun[] }> {
+): Promise<{ results: ScreenResult[]; aiReviewed: number; ledger: AgentRun[]; toolLog: import('../types').ToolCallEntry[] }> {
   const results: ScreenResult[] = [];
   const ledger: AgentRun[] = [];
+  const toolLog: import('../types').ToolCallEntry[] = [];
   const maxAI = opts.maxAI ?? APP_CONFIG.screenerMaxAI;
   // Full deterministic analysis for every candidate first (for setup-quality ranking)
   const analyzed = [];
@@ -251,6 +252,7 @@ export async function scanFull(
         identity: analysis.identity,
         symbol: analysis.symbol,
         category: analysis.category,
+        market: candidate.market,
         executionTimeframe: opts.executionTimeframe ?? '15m',
         price: analysis.price,
         change24h: analysis.change24h,
@@ -274,6 +276,9 @@ export async function scanFull(
       for (const entry of out.ledger) {
         if (ledger.length < 500) ledger.push({ ...entry, summary: `${analysis.symbol}: ${entry.summary}` });
       }
+      for (const t of out.toolLog) {
+        if (toolLog.length < 500) toolLog.push(t);
+      }
       const execBias = analysis.timeframes[analysis.timeframes.length - 1]?.bias ?? 'NEUTRAL';
       const htf = higherTimeframeBias(analysis.timeframes);
       const status = out.status;
@@ -286,11 +291,14 @@ export async function scanFull(
         category: analysis.category,
         price: Number.isFinite(analysis.price) ? analysis.price : null,
         change24h: analysis.change24h,
+        liquidityNotional: analysis.derivatives.dayVolumeNotional,
         trend: execBias,
         mtfBias: htf,
         confluence: analysis.signal.confluenceScore,
         setupQuality: out.quality,
         scores: out.scores,
+        consensus: out.final.consensus,
+        specialists: out.specialists,
         trapRisk: out.trap.risk,
         trapNotes: out.trap.flags,
         longSetup: out.longSetup,
@@ -320,16 +328,16 @@ export async function scanFull(
   }
   // Rank: setup quality first (never expected profit)
   results.sort((a, b) => (b.setupQuality ?? b.confluence) - (a.setupQuality ?? a.confluence));
-  return { results, aiReviewed, ledger };
+  return { results, aiReviewed, ledger, toolLog };
 }
 
 export async function scanUniverse(
   markets: HyperliquidMarket[],
   opts: Parameters<typeof scanFull>[1] & { maxCandidates?: number; onProgress?: (done: number, total: number) => void } = {},
-): Promise<{ results: ScreenResult[]; stats: ScreenerStats; ledger: AgentRun[] }> {
+): Promise<{ results: ScreenResult[]; stats: ScreenerStats; ledger: AgentRun[]; toolLog: import('../types').ToolCallEntry[] }> {
   const startedAt = Date.now();
   const fast = await fastScan(markets, opts);
-  const { results, aiReviewed, ledger } = await scanFull(fast.candidates, { ...opts, markets });
+  const { results, aiReviewed, ledger, toolLog } = await scanFull(fast.candidates, { ...opts, markets });
   const finishedAt = Date.now();
   const longCount = results.filter((r) => r.aiDirection === 'LONG' && (r.status === 'CONFIRMED' || r.status === 'CONDITIONAL')).length;
   const shortCount = results.filter((r) => r.aiDirection === 'SHORT' && (r.status === 'CONFIRMED' || r.status === 'CONDITIONAL')).length;
@@ -340,6 +348,7 @@ export async function scanUniverse(
   return {
     results,
     ledger,
+    toolLog,
     stats: {
       discovered: fast.stage0.discovered,
       scanned: fast.scanned,
@@ -354,4 +363,33 @@ export async function scanUniverse(
   };
 }
 
+export type ScreenDir = 'ALL' | 'LONG' | 'SHORT' | 'WAIT';
+
 export type { Candle };
+
+export function screenDirectionOf(r: ScreenResult): 'LONG' | 'SHORT' | 'WAIT' {
+  if (r.aiDirection === 'LONG' || r.aiDirection === 'SHORT') return r.aiDirection;
+  return 'WAIT';
+}
+
+export interface ScreenFilters {
+  category?: string;
+  dir?: ScreenDir;
+  highConfidence?: boolean;
+  highConfluence?: boolean;
+  lowTrap?: boolean;
+  highLiquidity?: boolean;
+}
+
+/** Pure result filtering (category / direction / quality gates) — unit-tested. */
+export function filterScreenResults(results: ScreenResult[], f: ScreenFilters = {}): ScreenResult[] {
+  return results.filter((r) => {
+    if (f.category && f.category !== 'ALL' && r.category !== f.category) return false;
+    if (f.dir && f.dir !== 'ALL' && screenDirectionOf(r) !== f.dir) return false;
+    if (f.highConfidence && (r.aiConfidence ?? 0) < 70) return false;
+    if (f.highConfluence && r.confluence < 70) return false;
+    if (f.lowTrap && r.trapRisk !== 'LOW') return false;
+    if (f.highLiquidity && (r.liquidityNotional ?? 0) < 1000000) return false;
+    return true;
+  });
+}

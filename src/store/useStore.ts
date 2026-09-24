@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { AnalysisMemoryEntry, AgentRun, AssetCategory, FinalTradeAnalysis, HyperliquidMarket, ScreenResult, ScreenerStats, TradingSignal } from '../types';
+import type { AnalysisMemoryEntry, AgentRun, AssetCategory, FinalTradeAnalysis, HyperliquidMarket, ScreenResult, ScreenerStats, ToolCallEntry, TradingSignal } from '../types';
 import type { SymbolAnalysis } from '../services/marketService';
 import type { CategoryFilter } from '../config/app';
 import { APP_CONFIG, resolveDefaultCategory } from '../config/app';
@@ -61,7 +61,9 @@ interface AppState {
   lastScanAt: number | null;
   autoScanMinutes: number;
   lastAgentLedger: AgentRun[];
-  setScreener: (r: Partial<Pick<AppState, 'screenResults' | 'screenStats' | 'scanning' | 'scanProgress' | 'lastScanAt' | 'autoScanMinutes' | 'lastAgentLedger'>>) => void;
+  /** Real tool invocations traced during the last scan (never fabricated) */
+  lastToolLog: ToolCallEntry[];
+  setScreener: (r: Partial<Pick<AppState, 'screenResults' | 'screenStats' | 'scanning' | 'scanProgress' | 'lastScanAt' | 'autoScanMinutes' | 'lastAgentLedger' | 'lastToolLog'>>) => void;
   setExecutionTimeframe: (tf: string) => void;
   setRisk: (r: Partial<Pick<AppState, 'riskPercent' | 'leverage' | 'accountBalance' | 'aiEnabled'>>) => void;
   marketCategoryOf: (marketId: string) => AssetCategory;
@@ -251,6 +253,7 @@ export const useStore = create<AppState>((set, get) => ({
   lastScanAt: null,
   autoScanMinutes: 0,
   lastAgentLedger: [],
+  lastToolLog: [],
   setScreener: (r) => set(r),
   setExecutionTimeframe: (executionTimeframe) => {
     set({ executionTimeframe });

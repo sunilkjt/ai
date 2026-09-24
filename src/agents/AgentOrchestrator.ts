@@ -7,9 +7,14 @@
 import type {
   AgentRun, AIAnalysis, AICritique, AIProvider, AnalysisMemoryEntry, AssetCategory,
   ConfluenceResult, DerivativesAnalysis, Direction, FinalDecision, HyperliquidContext,
-  MarketIdentity, MarketRegime, RiskAnalysis, ScreenResult, ScreenStatus,
-  SetupEvaluation, TimeframeAnalysis, TradingSignal, TrapRisk,
+  HyperliquidMarket, MarketIdentity, MarketRegime, RiskAnalysis, ScreenResult, ScreenStatus,
+  SetupEvaluation, TimeframeAnalysis, ToolCallEntry, TradingSignal, TrapRisk,
 } from '../types';
+import {
+  ALL_SPECIALISTS, SignalCriticAgent,
+  type SpecialistInput, type SpecialistOutput,
+} from './specialists';
+import { decideFinalSignal, type FinalSignal } from './finalDecision';
 import { APP_CONFIG } from '../config/app';
 import { computeRisk } from '../core/risk';
 import { setupQuality } from '../core/quality';
@@ -21,6 +26,7 @@ export interface PipelineInput {
   identity: MarketIdentity | null;
   symbol: string;
   category: AssetCategory;
+  market: HyperliquidMarket | null;
   executionTimeframe: string;
   price: number;
   change24h: number | null;
@@ -45,6 +51,8 @@ export interface PipelineInput {
 export interface PipelineOutput {
   direction: Direction;
   finalDecision: FinalDecision;
+  /** Explicit FinalDecisionAgent output (votes, validated numbers, consensus) */
+  final: FinalSignal;
   status: ScreenStatus;
   statusReason: string;
   longSetup: SetupEvaluation;
@@ -58,6 +66,10 @@ export interface PipelineOutput {
   aiAvailable: boolean;
   aiCallsUsed: number;
   ledger: AgentRun[];
+  /** Named specialist outputs (deterministic layer) */
+  specialists: SpecialistOutput[];
+  /** Real tool invocations traced during this run */
+  toolLog: ToolCallEntry[];
   memoryDelta: string[];
   why: string[];
   against: string[];
@@ -105,25 +117,38 @@ export function qualityGate(candidate: {
 
 export async function runPipeline(input: PipelineInput): Promise<PipelineOutput> {
   const ledger: AgentRun[] = [];
+  const toolLog: ToolCallEntry[] = [];
+  const trace = (agent: SpecialistOutput['agent'], tool: string, inputSummary: string, ms: number, ok: boolean): void => {
+    toolLog.push({ agent, tool, input: inputSummary, ms, ok, at: Date.now() });
+  };
   const maxAiCalls = input.maxAiCalls ?? 2;
   const aiOn = (input.aiEnabled ?? true) && maxAiCalls > 0;
   let aiCallsUsed = 0;
   let t = Date.now();
 
-  // LONG / SHORT specialists (deterministic)
+  // Named deterministic specialists (real systems, traced tool use).
+  const specInput: SpecialistInput = {
+    symbol: input.symbol, category: input.category, market: input.market ?? null,
+    price: input.price, change24h: input.change24h, oiRising: input.oiRising,
+    regime: input.regime, timeframes: input.timeframes, confluence: input.confluence,
+    signal: input.signal, derivatives: input.derivatives, hyperliquid: input.hyperliquid,
+    demo: input.demo, stale: input.stale, riskOpts: input.riskOpts,
+  };
+  const specialists: SpecialistOutput[] = [];
+  for (const agent of [...ALL_SPECIALISTS, SignalCriticAgent]) {
+    const started = Date.now();
+    const output = agent.run(specInput, (tool, summary, ms, ok) => trace(agent.name, tool, summary, ms, ok));
+    specialists.push(output);
+    stage(ledger, agent.name, output.ok ? 'ok' : 'failed', output.summary, started);
+  }
+
+  // Canonical outputs reused downstream (same core functions, no duplication).
   const longSetup = evaluateLongSetup(input.timeframes, input.derivatives);
   const shortSetup = evaluateShortSetup(input.timeframes, input.derivatives);
-  stage(ledger, 'long', 'ok', longSetup.candidate ? 'LONG CANDIDATE' : `no LONG (${longSetup.missing.length} blockers)`, t); t = Date.now();
-  stage(ledger, 'short', 'ok', shortSetup.candidate ? 'SHORT CANDIDATE' : `no SHORT (${shortSetup.missing.length} blockers)`, t); t = Date.now();
-
-  // Trap detector + contrarian (deterministic)
   const trap = detectTraps({
     signal: input.signal, timeframes: input.timeframes,
     derivatives: input.derivatives, change24h: input.change24h, oiRising: input.oiRising,
   });
-  stage(ledger, 'trap', 'ok', `trap risk ${trap.risk} (${trap.flags.length} flags)`, t); t = Date.now();
-  stage(ledger, 'contrarian', trap.contrarian.length ? 'ok' : 'skipped',
-    trap.contrarian.length ? `${trap.contrarian.length} exhaustion flags` : 'no exhaustion flags', t); t = Date.now();
 
   // Stop condition: nothing directional + weak confluence → skip expensive AI.
   const stopEarly = input.signal.direction === 'WAIT' && input.confluence.total < 40 && !longSetup.candidate && !shortSetup.candidate;
@@ -148,7 +173,7 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
       t = Date.now();
       ai = await active.analyze(ctx);
       aiCallsUsed += 1;
-      stage(ledger, 'mtf', 'ok', `AI analyst: ${ai.decision} (${ai.confidence}/100 via ${ai.provider})`, t);
+      stage(ledger, 'analyst', 'ok', `AI analyst: ${ai.decision} (${ai.confidence}/100 via ${ai.provider})`, t);
       t = Date.now();
       const riskPreview = computeRisk(input.signal, input.riskOpts);
       critique = await active.critique({ ...ctx, risk: riskPreview, analystSummary: ai.explanation });
@@ -161,7 +186,7 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
         t = Date.now();
         ai = await fb.analyze(ctx);
         aiCallsUsed += 1;
-        stage(ledger, 'mtf', 'ok', `AI analyst fallback: ${ai.decision}`, t);
+        stage(ledger, 'analyst', 'ok', `AI analyst fallback: ${ai.decision}`, t);
         t = Date.now();
         critique = await fb.critique({ ...ctx, risk: null, analystSummary: ai.explanation });
         aiCallsUsed += 1;
@@ -185,7 +210,7 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
     confluence: input.confluence, derivatives: input.derivatives, risk,
   });
 
-  // Quality gate → status + final decision
+  // Quality gate → status
   const gate = qualityGate({
     demo: input.demo,
     stale: input.stale,
@@ -197,20 +222,25 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
     trapRisk: trap.risk,
   });
   let status = gate.status;
-  let finalDecision: FinalDecision = input.signal.direction === 'WAIT' ? 'WAIT' : input.signal.direction;
-  if (ai) {
-    finalDecision = ai.decision;
-    if (critique?.approval === 'REJECT' && (finalDecision === 'LONG' || finalDecision === 'SHORT')) finalDecision = 'WAIT';
-    if (risk && !risk.valid && (finalDecision === 'LONG' || finalDecision === 'SHORT')) finalDecision = 'WAIT';
-    if (input.signal.direction === 'WAIT' && (finalDecision === 'LONG' || finalDecision === 'SHORT')) finalDecision = 'WAIT';
-  } else if (input.signal.direction !== 'WAIT' && input.signal.confluenceScore < 60) {
-    finalDecision = 'WAIT';
-  }
+
+  // FinalDecisionAgent: votes + gates + validated numbers → LONG | SHORT | WAIT.
+  const final = decideFinalSignal({
+    symbol: input.symbol, category: input.category, regime: input.regime,
+    timeframes: input.timeframes, confluence: input.confluence, signal: input.signal,
+    derivatives: input.derivatives, hyperliquid: input.hyperliquid,
+    longCandidate: longSetup.candidate, longDetail: longSetup.missing.join('; ') || 'checklist satisfied',
+    shortCandidate: shortSetup.candidate, shortDetail: shortSetup.missing.join('; ') || 'checklist satisfied',
+    contrarian: trap.contrarian, trapRisk: trap.risk, trapFlags: trap.flags,
+    ai, critique, risk, demo: input.demo, stale: input.stale,
+    gateStatus: gate.status, gateReasons: gate.reasons,
+  });
+  let finalDecision: FinalDecision = final.decision;
   if ((status === 'CONFIRMED' || status === 'CONDITIONAL') && finalDecision !== 'LONG' && finalDecision !== 'SHORT') {
     status = 'WATCHING';
   }
   if (status === 'REJECTED') finalDecision = 'WAIT';
-  stage(ledger, 'final', 'ok', `${finalDecision} / ${status} — ${gate.reasons.join('; ') || 'gate passed'}`, t);
+  stage(ledger, 'final', 'ok',
+    `${finalDecision} / ${status} — consensus L${final.consensus.longVotes}/S${final.consensus.shortVotes}/W${final.consensus.waitVotes}; ${gate.reasons.join('; ') || 'gate passed'}`, t);
 
   // Memory delta: what changed vs the previous structured summary
   const memoryDelta: string[] = [];
@@ -228,9 +258,9 @@ export async function runPipeline(input: PipelineInput): Promise<PipelineOutput>
   const against = [...input.signal.opposingReasons, ...trap.flags];
 
   return {
-    direction: input.signal.direction, finalDecision, status,
+    direction: input.signal.direction, finalDecision, final, status,
     statusReason: gate.reasons.join('; ') || 'gate passed',
     longSetup, shortSetup, trap, scores, quality,
-    ai, critique, risk, aiAvailable, aiCallsUsed, ledger, memoryDelta, why, against,
+    ai, critique, risk, aiAvailable, aiCallsUsed, ledger, specialists, toolLog, memoryDelta, why, against,
   };
 }
